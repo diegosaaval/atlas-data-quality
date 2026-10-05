@@ -41,6 +41,15 @@ def deps_fingerprint() -> str:
     return hashlib.sha256((ROOT / "pyproject.toml").read_bytes()).hexdigest()
 
 
+def venv_healthy() -> bool:
+    """The environment's interpreter runs and has pip."""
+    if not VENV_PY.exists():
+        return False
+    probe = subprocess.run([str(VENV_PY), "-c", "import pip"], cwd=ROOT,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return probe.returncode == 0
+
+
 def ensure_env(reinstall: bool) -> None:
     if sys.version_info < (3, 11):  # noqa: UP036 - runs on whatever Python the user has
         fail(f"Python 3.11+ is required, found {sys.version.split()[0]}. Install it from https://www.python.org/downloads/")
@@ -51,9 +60,23 @@ def ensure_env(reinstall: bool) -> None:
         say("Removing previous environment…")
         shutil.rmtree(VENV)
 
+    if VENV.exists() and not venv_healthy():
+        # e.g. created by another tool without pip, copied from another machine, or interrupted.
+        say("Existing environment is incomplete, repairing it…")
+        subprocess.run([str(VENV_PY), "-m", "ensurepip", "--upgrade"], cwd=ROOT,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if not venv_healthy():
+            import shutil
+
+            say("Could not repair it, recreating the environment…")
+            shutil.rmtree(VENV, ignore_errors=True)
+
     if not VENV_PY.exists():
         say(f"Creating virtual environment with Python {sys.version.split()[0]}…")
         venv.create(VENV, with_pip=True)
+        if not venv_healthy():
+            fail("Could not create a virtual environment with pip. On Debian/Ubuntu install "
+                 "'python3-venv'; otherwise reinstall Python from https://www.python.org/downloads/")
 
     if MARKER.exists() and MARKER.read_text() == deps_fingerprint():
         say("Dependencies already installed.")
