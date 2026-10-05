@@ -40,7 +40,7 @@ fuente: prueba
 titulo: Fuente de prueba
 ruta: {gold}
 manifiesto: _manifest.json
-hora_esperada: "07:00"
+hora_esperada: "23:59"   # el test no debe depender de la zona horaria de la máquina
 tablas:
   - {{nombre: pagos_gold, tipo: incremental, columna_fecha: fecha}}
   - {{nombre: indicadores_financieros, tipo: incremental, columna_fecha: fecha}}
