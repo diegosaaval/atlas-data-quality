@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,14 @@ hub = Hub()
 
 
 async def run_loop() -> None:
+    paused_since: float | None = None
     while True:
+        if settings.public_demo and not engine.running:  # en la demo pública nadie puede dejarla en pausa
+            paused_since = paused_since or time.monotonic()
+            if time.monotonic() - paused_since > settings.max_pause_seconds:
+                engine.running, engine.speed = True, 1.0
+        else:
+            paused_since = None
         if engine.running:
             snapshot = await asyncio.to_thread(engine.tick)
             await hub.broadcast(snapshot)
@@ -99,7 +107,7 @@ def readyz() -> dict[str, Any]:
 @app.get("/api/meta", tags=["general"])
 def meta() -> dict[str, Any]:
     return {"version": __version__, "github_url": settings.github_url,
-            "copilot": "claude" if os.getenv("ANTHROPIC_API_KEY") else "plantilla"}
+            "copilot": "claude" if os.getenv("ANTHROPIC_API_KEY") else "plantilla", "public_demo": settings.public_demo}
 
 
 @app.get("/api/state", tags=["general"])
@@ -190,8 +198,15 @@ def _build_rule(body: RuleRequest, rule_id: str) -> Rule:
     return rule
 
 
+def _protect_system_rule(rule_id: str) -> None:
+    if settings.public_demo and engine.rules.rules[rule_id].author != "usuario":
+        raise HTTPException(403, "En la demo pública las reglas base no se pueden modificar. Crea una regla nueva.")
+
+
 @app.post("/api/rules", tags=["reglas"], status_code=201)
 def create_rule(body: RuleRequest) -> dict[str, Any]:
+    if settings.public_demo and sum(r.author == "usuario" for r in engine.rules.rules.values()) >= settings.max_user_rules:
+        raise HTTPException(429, "La demo pública ya tiene muchas reglas de visitantes. Elimina alguna antes de crear otra.")
     rule = engine.rules.add(_build_rule(body, engine.rules.next_id()))
     return rule.to_dict()
 
@@ -215,6 +230,7 @@ class RulePatch(BaseModel):
 def update_rule(rule_id: str, body: RulePatch) -> dict[str, Any]:
     if rule_id not in engine.rules.rules:
         raise HTTPException(404, "Regla no encontrada")
+    _protect_system_rule(rule_id)
     try:
         return engine.rules.update(rule_id, body.model_dump(exclude_none=True)).to_dict()
     except ValueError as exc:
@@ -225,6 +241,7 @@ def update_rule(rule_id: str, body: RulePatch) -> dict[str, Any]:
 def delete_rule(rule_id: str) -> dict[str, bool]:
     if rule_id not in engine.rules.rules:
         raise HTTPException(404, "Regla no encontrada")
+    _protect_system_rule(rule_id)
     engine.rules.delete(rule_id)
     return {"deleted": True}
 
@@ -250,6 +267,11 @@ class ControlRequest(BaseModel):
 
 @app.post("/api/control", tags=["simulación"])
 async def control(body: ControlRequest) -> dict[str, Any]:
+    if settings.public_demo:
+        if body.reset:
+            raise HTTPException(403, "La demo pública no se puede reiniciar.")
+        if body.speed is not None and body.speed > 4:
+            body.speed = 4
     if body.reset:
         await asyncio.to_thread(engine.reset)
     if body.finish_day or body.next_day:

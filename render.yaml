@@ -1,0 +1,14 @@
+# Demo pública en Render (plan gratuito). La usa el botón «Deploy to Render» del README.
+services:
+  - type: web
+    name: atlas-data-quality
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: ATLAS_PUBLIC_DEMO
+        value: "1"
+      - key: ATLAS_RANDOM_ANOMALIES
+        value: "1"
+      - key: TZ
+        value: America/Bogota

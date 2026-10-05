@@ -1,6 +1,9 @@
 #!/bin/bash
-# ATLAS ONE - doble clic (macOS) o ./start.command (Linux/macOS) para instalar todo y abrir la plataforma.
+# ATLAS · Linux (o terminal en Mac): ./start.sh
 cd "$(dirname "$0")" || exit 1
+echo
+echo "  Iniciando ATLAS…"
+echo
 
 PY=""
 for cand in python3.13 python3.12 python3.11 python3 python; do
@@ -10,21 +13,20 @@ for cand in python3.13 python3.12 python3.11 python3 python; do
 done
 
 if [ -z "$PY" ]; then
-  echo
-  echo "  No se encontro Python 3.11 o superior."
+  echo "  Necesitas Python 3.11 o más reciente."
   if command -v brew >/dev/null 2>&1; then
-    read -r -p "  Instalar Python 3.12 con Homebrew? [s/N] " ans
+    read -r -p "  ¿Lo instalo con Homebrew? [s/N] " ans
     if [[ "$ans" =~ ^[sSyY]$ ]]; then brew install python@3.12 && PY="$(brew --prefix)/bin/python3.12"; fi
   fi
   if [ -z "$PY" ]; then
-    echo "  Descargalo de https://www.python.org/downloads/ y vuelve a abrir start.command"
-    open "https://www.python.org/downloads/" 2>/dev/null || true
-    read -r -p "  Enter para cerrar…" _
+    echo "  Se abrirá la página de descarga: instálalo y vuelve a abrir este archivo."
+    open "https://www.python.org/downloads/macos/" 2>/dev/null || true
+    read -r -p "  Presiona Enter para cerrar…" _
     exit 1
   fi
 fi
 
 "$PY" run.py "$@"
 status=$?
-[ $status -ne 0 ] && read -r -p "  Enter para cerrar…" _
+[ $status -ne 0 ] && read -r -p "  Presiona Enter para cerrar…" _
 exit $status
