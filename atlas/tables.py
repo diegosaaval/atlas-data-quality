@@ -69,7 +69,7 @@ class TableSpec:
 
 
 C = Column
-TABLES: tuple[TableSpec, ...] = (
+BANK_TABLES: tuple[TableSpec, ...] = (
     TableSpec(
         "clientes", "Clientes (novedades)", "Clientes vinculados en el día.",
         "Gobierno de Datos · Clientes", "gobierno.clientes@banco.example", 6 * 60, "incremental", "fecha_vinculacion",
@@ -123,7 +123,17 @@ TABLES: tuple[TableSpec, ...] = (
         ("Comité de riesgo", "Junta directiva", "Indicadores para el regulador"),
     ),
 )
-BY_NAME = {t.name: t for t in TABLES}
+# Catálogo activo. Por defecto, el banco de demo; un conector lo reemplaza con sus propias tablas.
+# Se modifica en sitio para que todos los módulos que lo importaron vean el cambio.
+TABLES: list[TableSpec] = list(BANK_TABLES)
+BY_NAME: dict[str, TableSpec] = {t.name: t for t in TABLES}
+
+
+def use_tables(specs: list[TableSpec] | tuple[TableSpec, ...]) -> None:
+    """Cambia el catálogo activo de tablas monitoreadas."""
+    TABLES[:] = list(specs)
+    BY_NAME.clear()
+    BY_NAME.update({t.name: t for t in TABLES})
 
 
 @dataclass(frozen=True)

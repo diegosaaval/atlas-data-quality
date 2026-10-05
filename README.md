@@ -5,7 +5,7 @@
 [![ci](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml)
 [![codeql](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/codeql.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/codeql.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests](https://img.shields.io/badge/tests-73%20pasando-brightgreen)
+![tests](https://img.shields.io/badge/tests-81%20pasando-brightgreen)
 ![coverage](https://img.shields.io/badge/cobertura-95%25-brightgreen)
 ![license](https://img.shields.io/badge/licencia-MIT-lightgrey)
 
@@ -134,6 +134,21 @@ Desde **Simular anomalía** (o en la demo guiada de 2 minutos, botón **Ver demo
 
 ![Reglas configurables](docs/img/reglas.png)
 
+## Tus propias tablas y FINFLOW
+
+La demo usa un banco simulado, pero ATLAS vigila **cualquier tabla que le indiques**. Un conector es un YAML en `conectores/` con la ruta de los archivos (Parquet o CSV) y las tablas a mirar. ATLAS lee su estructura sola, valida su historia, **sugiere reglas** para las tablas que no tengan y queda vigilando cada nueva publicación. Se cambia de fuente desde el botón **Fuente de datos**, sin tocar el código. Guía: [docs/CONECTORES.md](docs/CONECTORES.md).
+
+El primer conector es **[FINFLOW](https://github.com/diegosaaval)**, mi pipeline financiero (PySpark + dbt + Airflow): FINFLOW publica sus tablas gold (`pagos_gold`, `clientes_gold`, `contracargos_gold`, `indicadores_financieros`) y ATLAS verifica que sean confiables.
+
+```
+FINFLOW  landing → bronze → silver → gold (Parquet) + _manifest.json
+                                         │
+ATLAS                                    ▼
+         lee la estructura → valida cada fecha publicada → incidentes y escalamiento
+```
+
+Con FINFLOW en la carpeta vecina (`../finflow`), basta con elegir **FINFLOW** en *Fuente de datos* o arrancar con `./start.sh --fuente finflow`.
+
 ## Datos de ejemplo
 
 Un banco sintético (determinístico por semilla) carga cada mañana 6 tablas con comportamiento realista: cartera estable de ~1.800 créditos, mora entre 3% y 6%, fines de semana con menos movimiento. Arranca con **70 días de historia**, incluidos incidentes pasados, para que las tendencias tengan sentido desde el primer minuto.
@@ -186,12 +201,6 @@ pip install -e ".[dev,ai]"
 uvicorn atlas.api:app --reload
 ```
 
-### Demo pública en internet
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/diegosaaval/atlas-data-quality)
-
-El botón publica una copia propia y gratuita en [Render](https://render.com) usando [`render.yaml`](render.yaml). En modo demo pública las reglas base quedan protegidas, cada visitante puede crear reglas propias y nadie puede reiniciarla ni dejarla en pausa. En el plan gratuito la demo se duerme tras 15 minutos sin visitas: la primera visita tarda cerca de un minuto en despertarla, y arranca de nuevo con 70 días de historia.
-
 ### Configuración
 
 | Variable | Para qué | Por defecto |
@@ -199,6 +208,8 @@ El botón publica una copia propia y gratuita en [Render](https://render.com) us
 | `ATLAS_TICK_SECONDS` | Segundos reales por cada 15 minutos simulados | `1.0` |
 | `ATLAS_RANDOM_ANOMALIES` | Aparecen anomalías aleatorias de vez en cuando | `1` |
 | `ATLAS_PUBLIC_DEMO` | Protege la demo cuando es pública | `0` |
+| `ATLAS_FUENTE` | Conector a usar (`conectores/<nombre>.yaml`); vacío = demo | vacío |
+| `ATLAS_FUENTE_RUTA` | Carpeta de los datos del conector (reemplaza la del YAML) | la del YAML |
 | `ATLAS_RULES_PATH` | Archivo donde se guardan las reglas | `data/reglas.json` |
 | `ATLAS_SEED` | Semilla del banco sintético | `7` |
 | `ANTHROPIC_API_KEY` | Si se define, Claude redacta los correos; si no, plantillas | sin definir |
@@ -212,8 +223,8 @@ Ver [`.env.example`](.env.example).
 pytest --cov=atlas
 ```
 
-- **73 tests**, **95% de cobertura**, lint con **ruff**.
-- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública (incluida una regla SQL maliciosa que se cancela sola), los encabezados de seguridad y el lanzador (incluido el acceso directo de Mac).
+- **81 tests**, **95% de cobertura**, lint con **ruff**.
+- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública (incluida una regla SQL maliciosa que se cancela sola), los encabezados de seguridad, los conectores (Parquet con manifiesto y CSV sin manifiesto) y el lanzador (incluido el acceso directo de Mac).
 - El CI de GitHub Actions corre lint y tests en Python 3.11, 3.12 y 3.13, construye la imagen Docker y hace una prueba de humo del contenedor.
 
 ## Seguridad
@@ -243,10 +254,12 @@ atlas/
   rules.py      tipos de regla, traducción a SQL, línea base y outliers
   monitors.py   disponibilidad, volumen y estructura
   engine.py     validación al llegar cada tabla, puntajes e incidentes
+  connectors.py conectores: lee cualquier tabla Parquet/CSV, su estructura y sugiere reglas
   copilot.py    correo de escalamiento (plantilla o Claude)
   api.py        FastAPI: REST + WebSocket + métricas
+conectores/     fuentes reales en YAML (FINFLOW incluido)
 web/            interfaz en vivo
-tests/          73 tests
+tests/          81 tests
 docs/           capturas y decisiones de diseño
 run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 ```
@@ -255,9 +268,11 @@ run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 
 - [x] Monitor sobre tablas simuladas, reglas configurables, incidentes y copiloto
 - [x] Despliegue público con Docker en Render: https://atlas-data-quality.onrender.com
-- [ ] Conector a una base real (PostgreSQL / SQL Server, solo lectura)
+- [x] Conectores a tablas reales en Parquet y CSV, con reglas sugeridas
+- [x] Monitorear las tablas gold de **FINFLOW**
+- [ ] Conector a una base (PostgreSQL / SQL Server, solo lectura)
 - [ ] Conector cloud (S3 + Athena con IAM de solo lectura)
-- [ ] Monitorear las tablas gold de **FINFLOW**, mi pipeline financiero en AWS
+- [ ] FINFLOW en AWS: leer su gold desde S3 / Athena
 
 ATLAS seguirá siendo un **monitor**, no un ETL.
 

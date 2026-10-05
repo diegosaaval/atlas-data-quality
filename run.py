@@ -90,7 +90,7 @@ def ensure_env(reinstall: bool) -> None:
     say("Instalando componentes, solo la primera vez (necesita internet, ~1 minuto)…")
     pip = [str(VENV_PY), "-m", "pip", "--disable-pip-version-check"]
     subprocess.run([*pip, "install", "-q", "--upgrade", "pip"], cwd=ROOT, check=False)
-    if subprocess.run([*pip, "install", "-q", "-e", ".[ai,dev]"], cwd=ROOT).returncode != 0:
+    if subprocess.run([*pip, "install", "-q", "-e", ".[ai,dev,conectores]"], cwd=ROOT).returncode != 0:
         fail("no se pudieron instalar los componentes. Revisa tu conexión y vuelve a abrir "
              "(o usa --reinstall).")
     MARKER.write_text(deps_fingerprint())
@@ -252,6 +252,8 @@ def main() -> None:
     parser.add_argument("--test", action="store_true", help="correr las pruebas en vez del servidor")
     parser.add_argument("--reinstall", action="store_true", help="rehacer el entorno")
     parser.add_argument("--sin-acceso", action="store_true", help="no crear el acceso directo en el escritorio")
+    parser.add_argument("--fuente", default=os.getenv("ATLAS_FUENTE", ""),
+                        help="conector de conectores/<nombre>.yaml (p. ej. finflow); vacío = demo")
     args = parser.parse_args()
 
     sys.stdout.reconfigure(line_buffering=True)  # los mensajes salen en el acto, también en Windows
@@ -259,6 +261,8 @@ def main() -> None:
     ensure_env(args.reinstall)
     if args.test:
         sys.exit(subprocess.run([str(VENV_PY), "-m", "pytest"], cwd=ROOT).returncode)
+    if args.fuente:
+        os.environ["ATLAS_FUENTE"] = args.fuente  # el servidor arranca leyendo esa fuente
     maybe_shortcut(args.sin_acceso)
     serve(args.port, not args.no_browser)
 

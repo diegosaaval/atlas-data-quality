@@ -90,6 +90,15 @@ class Store:
             self.conn.execute("INSERT OR REPLACE INTO loads VALUES (?, ?, ?, ?, ?)",
                               (day, spec.name, arrived, len(rows), json.dumps(columns)))
 
+    def forget_day(self, table: str, day: str) -> None:
+        """Re-validating a day (a source republished it) replaces it instead of duplicating it."""
+        with self.lock:
+            if table in {t.name for t in TABLES}:
+                self.conn.execute(f"DELETE FROM t_{next(t.name for t in TABLES if t.name == table)} "
+                                  "WHERE _fecha_carga = ?", (day,))
+            for meta in ("loads", "metrics", "check_results"):
+                self.conn.execute(f"DELETE FROM {meta} WHERE tabla = ? AND fecha = ?", (table, day))
+
     def put_metric(self, day: str, table: str, metric: str, value: float | None) -> None:
         if value is None:
             return

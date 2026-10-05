@@ -145,3 +145,20 @@ def test_oversized_rules_are_rejected(client):
     assert client.post("/api/rules", json=long).status_code == 422
     many = {"table": "pagos", "type": "valores_permitidos", "params": {"column": "canal", "values": [str(i) for i in range(200)]}}
     assert client.post("/api/rules", json=many).status_code == 422
+
+
+def test_sources_listing_and_switching(client, monkeypatch):
+    data = client.get("/api/sources").json()
+    assert data["active"] == "demo" and data["sources"][0]["name"] == "demo"
+    assert client.post("/api/source", json={"name": "no_existe"}).status_code == 422
+    assert client.get("/api/state").json()["mode"] == "simulacion"  # si falla, sigue en la demo
+    assert client.post("/api/source", json={"name": "demo"}).json()["mode"] == "simulacion"
+    with pytest.raises(ValueError):
+        api.engine.source = object()  # cualquier fuente real bloquea los controles de simulación
+        api.engine.run_day()
+    api.engine.source = None
+
+
+def test_public_demo_cannot_switch_source(public):
+    assert public.post("/api/source", json={"name": "finflow"}).status_code == 403
+    assert [s["name"] for s in public.get("/api/sources").json()["sources"]] == ["demo"]

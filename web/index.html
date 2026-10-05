@@ -33,6 +33,7 @@
       <select id="speed" title="Velocidad de la simulación">
         <option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
       </select>
+      <button class="btn" id="btn-source" title="Elegir la fuente de datos" hidden><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-2px;margin-right:6px"><ellipse cx="8" cy="3.5" rx="5.5" ry="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span id="source-label">Fuente: Demo</span></button>
       <button class="btn" id="btn-anomaly" title="Simular una carga con problemas">Simular anomalía</button>
       <button class="btn primary" id="btn-demo" title="Recorrido guiado de 2 minutos">Ver demo</button>
       <button class="icon-btn" id="btn-theme" title="Cambiar tema" aria-label="Cambiar tema"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg></button>
@@ -43,7 +44,7 @@
   <main>
     <!-- RESUMEN ----------------------------------------------------------- -->
     <section class="view active" data-view="resumen">
-      <header class="page-head"><div><h1>Resumen del día</h1><p>Cada tabla se valida apenas llega.</p></div></header>
+      <header class="page-head"><div><h1>Resumen del día</h1><p id="resumen-sub">Cada tabla se valida apenas llega.</p></div></header>
       <div class="card today" id="today"></div>
       <div class="kpis" id="kpis"></div>
       <div class="cards" id="table-cards"></div>
@@ -117,6 +118,15 @@
       <h2>Simular una anomalía</h2>
       <p class="muted">Elige un problema típico de las cargas. Si la tabla aún no ha llegado hoy, se aplica hoy; si ya llegó, en la carga de mañana.</p>
       <div class="scenarios" id="scenarios"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="source-modal" hidden>
+    <div class="modal-card">
+      <button class="icon-btn close" data-close aria-label="Cerrar"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      <h2>Fuente de datos</h2>
+      <p class="muted">Elige qué tablas monitorea ATLAS. La <b>demo</b> usa un banco simulado; un <b>conector</b> lee tablas reales (Parquet o CSV) descritas en <code>conectores/*.yaml</code>, sin modificarlas.</p>
+      <div class="scenarios" id="sources"></div>
     </div>
   </div>
 

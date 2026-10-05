@@ -12,15 +12,15 @@ import statistics
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from . import monitors
 from .config import Settings, get_settings
 from .monitors import GRACE_MINUTES, hhmm
-from .rules import FAIL, OK, SEVERITY_LABEL, SEVERITY_WEIGHT, WARN, CheckResult, RuleStore, baseline, evaluate
+from .rules import FAIL, OK, SEVERITY_LABEL, SEVERITY_WEIGHT, WARN, CheckResult, Rule, RuleStore, baseline, evaluate
 from .store import Store
-from .tables import BY_NAME, DAYS_ES, SCENARIOS, SCENARIOS_BY_ID, TABLES, Load, SyntheticBank
+from .tables import BANK_TABLES, BY_NAME, DAYS_ES, SCENARIOS, SCENARIOS_BY_ID, TABLES, Load, SyntheticBank, use_tables
 
 DAY_START, DAY_END, STEP = 5 * 60 + 30, 10 * 60 + 30, 15
 HISTORY_DAYS = 70
@@ -78,8 +78,20 @@ class Engine:
             s = self.settings
             if getattr(self, "store", None) is not None:
                 self.store.close()
+            # Fuente: banco simulado (demo) o un conector con tablas reales (conectores/<nombre>.yaml).
+            self.source = None
+            if s.source:
+                from .connectors import load_source
+
+                self.source = load_source(s.source, s.source_config, s.source_path)
+                use_tables(self.source.tables)
+            else:
+                use_tables(BANK_TABLES)
             self.store = Store(s.db_path)
-            self.rules = RuleStore(s.rules_path)
+            rules_path = s.rules_path
+            if self.source and rules_path == "data/reglas.json":
+                rules_path = f"data/reglas_{self.source.name}.json"
+            self.rules = RuleStore(rules_path, defaults=self.source.rules if self.source else None)
             self.bank = SyntheticBank(s.seed)
             self.rng = random.Random(s.seed + 1)
             self.today: date = s.start_date - timedelta(days=HISTORY_DAYS)
@@ -90,6 +102,9 @@ class Engine:
             self.events: deque[dict] = deque(maxlen=150)
             self.queued: dict[str, str] = {}
             self.copilot_cache: dict[str, dict] = {}
+            if self.source:
+                self._reset_source()
+                return
             self._bootstrapping = True
             for back in range(HISTORY_DAYS, 0, -1):
                 scenario = SEEDED_HISTORY.get(back)
@@ -107,6 +122,102 @@ class Engine:
     def close(self) -> None:
         self.store.close()
 
+    # -------------------------------------------------------- real data source
+    def _reset_source(self) -> None:
+        now = datetime.now()
+        self.today, self.minute = now.date(), now.hour * 60 + now.minute
+        self.tables = {t.name: TableState(Load(t.name, [], [], None)) for t in TABLES}
+        self._fingerprint = ""
+        self._processed: set[str] = set()
+        self._overdue_day: str | None = None
+        self.source_info: dict[str, Any] = {"status": "esperando", "published_at": None, "run_id": None,
+                                            "dates": 0, "last_date": None}
+        self._bootstrapping = True
+        self._sync()
+        self._bootstrapping = False
+        if self.source_info["dates"]:
+            self.log("success", f"Conectado a {self.source.title}: {self.source_info['dates']} fechas validadas "
+                                f"(publicación {self.source_info['run_id'] or self.source_info['published_at']}).")
+        else:
+            self.log("warn", f"Conectado a {self.source.title}, esperando su primera publicación.")
+
+    def _sync(self) -> bool:
+        """Valida lo que la fuente haya publicado desde la última vez. True si hubo algo nuevo."""
+        src = self.source
+        fp = src.fingerprint()
+        if not fp or fp == self._fingerprint:
+            return False
+        manifest = src.read_manifest()
+        if manifest:
+            published = datetime.fromisoformat(str(manifest["published_at"])).astimezone()
+            dates = sorted({date.fromisoformat(d) for d in manifest.get("dates", [])}) or [published.date()]
+        else:
+            published = datetime.fromtimestamp(max(f.stat().st_mtime for f in src.files.values() if f.exists()))
+            dates = [published.date()]
+        pending = [d for d in dates if d.isoformat() not in self._processed] or dates
+        minute = published.hour * 60 + published.minute
+        for i, day in enumerate(pending):
+            last = i == len(pending) - 1
+            self.today, self.minute = day, minute
+            iso = day.isoformat()
+            self.tables = {}
+            for spec in TABLES:
+                snapshot = src.load_types.get(spec.name) != "incremental"
+                if snapshot and not last:
+                    continue  # una foto completa solo se valida en la fecha más reciente
+                rows, cols = src.read(spec, None if snapshot else day)
+                self.tables[spec.name] = TableState(Load(spec.name, rows, cols or spec.column_names, minute))
+            for spec in TABLES:
+                if spec.name not in self.tables:
+                    continue
+                self._suggest_rules(spec.name)
+                self.store.forget_day(spec.name, iso)
+                self._deliver(spec.name, minute)
+            self.store.forget_day("_global", iso)
+            self._close_day()
+            self._processed.add(iso)
+        self._fingerprint = fp
+        self._overdue_day = None
+        self.source_info = {"status": "ok", "published_at": published.isoformat(timespec="minutes"),
+                            "run_id": (manifest or {}).get("run_id"), "dates": len(self._processed),
+                            "last_date": max(self._processed), "datasets": (manifest or {}).get("datasets", {})}
+        if not self._bootstrapping:
+            self.log("info", f"{src.title} publicó {len(pending)} fecha(s) nuevas; validadas.")
+        return True
+
+    def _suggest_rules(self, name: str) -> None:
+        """Tablas sin reglas: ATLAS lee su perfil y propone reglas iniciales (una sola vez)."""
+        from .connectors import suggest_rules
+
+        if name not in self.source.auto_rules or self.rules.for_table(name, enabled_only=False):
+            return
+        for raw in suggest_rules(BY_NAME[name], self.tables[name].load.rows):
+            try:
+                self.rules.add(Rule(id=self.rules.next_id(), author="sugerida", **raw))
+            except ValueError:
+                continue
+
+    def _check_overdue(self) -> None:
+        """Si la fuente no publicó hoy antes de la hora acordada (+ gracia), es un incidente."""
+        if not self.source_info.get("published_at"):
+            return
+        now = datetime.now()
+        published = datetime.fromisoformat(self.source_info["published_at"])
+        deadline = self.source.expected_at + GRACE_MINUTES
+        today = now.date().isoformat()
+        if published.date() >= now.date() or now.hour * 60 + now.minute < deadline or self._overdue_day == today:
+            return
+        self._overdue_day = today
+        for spec in TABLES:
+            check = CheckResult(spec.name, "disponibilidad", "Disponibilidad de la tabla del día", "monitor", "critica",
+                                FAIL, f"{self.source.title} no ha publicado hoy. Última publicación: "
+                                      f"{published:%Y-%m-%d %H:%M}.", threshold=f"antes de {hhmm(deadline)}",
+                                rule_type="disponibilidad")
+            self.tables[spec.name].results = [check]
+            self.tables[spec.name].status = "no_disponible"
+            self._update_incident(spec.name, [check])
+        self.log("error", f"{self.source.title} no ha publicado hoy (se esperaba antes de {hhmm(deadline)}).")
+
     @property
     def now(self) -> tuple[str, int]:
         return self.today.isoformat(), self.minute
@@ -119,6 +230,10 @@ class Engine:
     # -------------------------------------------------------------- the clock
     def tick(self) -> dict[str, Any]:
         with self.lock:
+            if self.source:
+                self._sync()
+                self._check_overdue()
+                return self.snapshot()
             if self.minute >= DAY_END:
                 self._close_day()
                 self.today += timedelta(days=1)
@@ -129,6 +244,8 @@ class Engine:
 
     def run_day(self) -> None:
         """Advance to the end of the current day (tests / 'skip to end of day')."""
+        if self.source:
+            raise ValueError("Con una fuente real el día no se simula: ATLAS espera sus publicaciones.")
         with self.lock:
             while self.minute < DAY_END:
                 self._advance()
@@ -280,6 +397,8 @@ class Engine:
     # -------------------------------------------------------------- scenarios
     def inject(self, scenario_id: str) -> dict[str, str]:
         """Apply a bad load: today if the table has not arrived yet, otherwise tomorrow."""
+        if self.source:
+            raise ValueError("Las anomalías simuladas solo existen en la demo; aquí los datos son reales.")
         with self.lock:
             sc = SCENARIOS_BY_ID[scenario_id]
             st = self.tables[sc.table]
@@ -368,8 +487,14 @@ class Engine:
                 "tables": tables,
                 "incidents": [self.incident_dict(i) for i in open_first[:40]],
                 "events": list(self.events)[:40],
-                "scenarios": [{"id": s.id, "title": s.title, "description": s.description, "table": s.table,
-                               "queued": self.queued.get(s.table) == s.id} for s in SCENARIOS],
+                "scenarios": [] if self.source else [
+                    {"id": s.id, "title": s.title, "description": s.description, "table": s.table,
+                     "queued": self.queued.get(s.table) == s.id} for s in SCENARIOS],
+                "mode": "conector" if self.source else "simulacion",
+                "source": None if not self.source else {
+                    "name": self.source.name, "title": self.source.title, "description": self.source.description,
+                    "path": str(self.source.path), "expected_at": hhmm(self.source.expected_at),
+                    "url": self.source.project_url, **self.source_info},
                 "score_series": series,
             }
 

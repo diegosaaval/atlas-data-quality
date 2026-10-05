@@ -54,6 +54,18 @@ function onSnapshot(s) {
 const ICON_PAUSE = `<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3" y="2" width="3" height="10" rx="1" fill="currentColor"/><rect x="8" y="2" width="3" height="10" rx="1" fill="currentColor"/></svg>`;
 const ICON_PLAY = `<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M4 2.2v9.6a.8.8 0 0 0 1.2.7l7.6-4.8a.8.8 0 0 0 0-1.4L5.2 1.5A.8.8 0 0 0 4 2.2z" fill="currentColor"/></svg>`;
 function renderHeader(s) {
+  const real = s.mode === "conector";
+  // Con una fuente real no hay simulación: se ocultan sus controles.
+  ["#btn-play", "#speed", "#btn-anomaly", "#btn-demo"].forEach((id) => ($(id).hidden = real));
+  $("#btn-source").hidden = !state.meta || state.meta.public_demo;
+  $("#source-label").textContent = real ? `Fuente: ${s.source.name.toUpperCase()}` : "Fuente: Demo";
+  if (real) {
+    $("#clock").className = "clock " + (s.source.status === "ok" ? "on" : "paused");
+    const pub = s.source.published_at ? new Date(s.source.published_at) : null;
+    $("#clock span").textContent = pub ? `${s.source.name.toUpperCase()} · ${pub.toLocaleDateString("es-CO", { day: "2-digit", month: "short" })} ${pub.toTimeString().slice(0, 5)}` : `${s.source.name.toUpperCase()} · esperando`;
+    const b = $("#inc-badge"); b.hidden = !s.kpis.open_incidents; b.textContent = s.kpis.open_incidents;
+    return;
+  }
   $("#clock").className = "clock " + (s.running ? "on" : "paused");
   $("#clock span").textContent = `${s.weekday.slice(0, 3)} ${s.date.slice(5)} · ${s.time}`;
   setHTML($("#btn-play"), s.running ? ICON_PAUSE : ICON_PLAY);
@@ -90,6 +102,23 @@ function renderResumen(s) {
   const long = d.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
   const k = s.kpis;
   const pending = s.tables.filter((t) => ["esperando", "retrasada"].includes(t.status)).length;
+  if (s.source) {
+    const src = s.source;
+    const pub = src.published_at ? new Date(src.published_at) : null;
+    $("#resumen-sub").textContent = `Validando las tablas que publica ${src.title}.`;
+    setHTML($("#today"), `
+      <div>
+        <div class="date">Última fecha validada</div>
+        <div class="time">${src.last_date ? esc(new Date(src.last_date + "T12:00:00").toLocaleDateString("es-CO", { day: "numeric", month: "short" })) : "—"}</div>
+        <div class="sub">${src.dates} fechas · ${k.tables_total} tablas · ${pub ? `publicado ${esc(pub.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" }))}` : "esperando publicación"}</div>
+      </div>
+      <div class="source">
+        <div class="actions"><span class="pill monitor">Fuente real</span><b>${esc(src.title)}</b>${src.run_id ? `<span class="mono small muted">${esc(src.run_id)}</span>` : ""}</div>
+        <p class="muted small" style="margin:8px 0">${esc(src.description)}</p>
+        <p class="chips">${Object.entries(src.datasets || {}).map(([n, c]) => `<span>${esc(n)} · ${nf(c)} filas</span>`).join("") || s.tables.map((t) => `<span>${esc(t.name)}</span>`).join("")}</p>
+        <p class="small muted" style="margin:10px 0 0">Publicación esperada antes de las ${esc(src.expected_at)} (+60 min de gracia) · <span class="mono">${esc(src.path)}</span></p>
+      </div>`);
+  } else {
   setHTML($("#today"), `
     <div>
       <div class="date">${esc(long)}</div>
@@ -97,6 +126,7 @@ function renderResumen(s) {
       <div class="sub">${k.tables_arrived} de ${k.tables_total} tablas recibidas${pending ? ` · ${pending} pendientes` : ""}</div>
     </div>
     <div>${timeline(s)}</div>`);
+  }
 
   const kpi = (label, value, hint, alert) => `<div class="kpi ${alert ? "alert" : ""}"><div class="label">${label}</div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
   setHTML($("#kpis"), [
@@ -218,6 +248,7 @@ document.addEventListener("mouseout", (e) => { if (e.target.closest("[data-tip]"
 
 // ---------------------------------------------------------------------- TABLAS
 async function renderTablas(s, force) {
+  if (!s.tables.some((t) => t.name === state.table)) state.table = s.tables[0].name;
   setHTML($("#table-picker"), s.tables.map((t) => `<button data-pick="${esc(t.name)}" class="${t.name === state.table ? "active" : ""}">${st(t.status, "")}${esc(t.title)}</button>`).join(""));
   const sum = s.tables.find((t) => t.name === state.table);
   const key = `${state.table}|${s.date}|${sum.status}|${sum.rows}|${sum.score}`;
@@ -434,7 +465,10 @@ async function renderReglas(s, force) {
   if (!state.rules || force) await loadRules();
   const R = state.rules;
   const filter = $("#rules-filter");
-  if (filter.options.length <= 1) {
+  const tableKey = s.tables.map((t) => t.name).join(",");
+  if (filter.dataset.tables !== tableKey) {
+    filter.dataset.tables = tableKey;
+    filter.length = 1; $("#rf-table").length = 0; $("#rf-type").length = 0; $("#rf-severity").length = 0;
     s.tables.forEach((t) => filter.add(new Option(t.title, t.name)));
     const tSel = $("#rf-table"); s.tables.forEach((t) => tSel.add(new Option(t.title, t.name)));
     Object.entries(R.types).forEach(([k, v]) => $("#rf-type").add(new Option(v, k)));
@@ -447,7 +481,7 @@ async function renderReglas(s, force) {
     ${rows.map((r) => `<tr>
       <td><label class="switch"><input type="checkbox" data-toggle="${esc(r.id)}" ${r.enabled ? "checked" : ""} ${locked(r) ? "disabled" : ""}><span></span></label></td>
       <td class="mono small">${esc(r.table)}</td>
-      <td>${esc(r.description)}${r.author === "usuario" ? '<span class="tag-user">tuya</span>' : ""}${r.note ? `<br><span class="small muted">${esc(r.note)}</span>` : ""}</td>
+      <td>${esc(r.description)}${r.author === "usuario" ? '<span class="tag-user">tuya</span>' : r.author === "sugerida" ? '<span class="tag-user">sugerida por ATLAS</span>' : ""}${r.note ? `<br><span class="small muted">${esc(r.note)}</span>` : ""}</td>
       <td class="small muted">${esc(r.type_label)}</td><td>${sev(r.severity, r.severity_label)}</td>
       <td><button class="icon-btn" data-del="${esc(r.id)}" ${locked(r) ? "hidden" : ""} title="Eliminar regla" aria-label="Eliminar regla"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></td></tr>`).join("")}</tbody>`);
 }
@@ -534,6 +568,35 @@ $$(".tabs button").forEach((b) => b.addEventListener("click", () => setView(b.da
 $("#btn-play").addEventListener("click", () => control({ running: !state.snap?.running }));
 $("#speed").addEventListener("change", (e) => control({ speed: Number(e.target.value) }));
 $("#btn-about").addEventListener("click", () => openModal("#about"));
+
+// ---------------------------------------------------------- fuentes de datos
+$("#btn-source").addEventListener("click", async () => {
+  try {
+    const data = await api("/api/sources");
+    setHTML($("#sources"), data.sources.map((src) => `
+      <div class="scenario">
+        <h4>${esc(src.title)}${src.name === data.active ? ' <span class="pill monitor">en uso</span>' : ""}</h4>
+        <p>${esc(src.available ? src.description : src.error || "No disponible")}</p>
+        ${src.tables?.length ? `<p class="chips">${src.tables.map((t) => `<span>${esc(t)}</span>`).join("")}</p>` : ""}
+        ${src.path ? `<p class="mono small muted" style="margin:0">${esc(src.path)}</p>` : ""}
+        <div class="row"><span></span><button class="btn small primary" data-src="${esc(src.name)}" ${!src.available || src.name === data.active ? "disabled" : ""}>
+          ${src.name === data.active ? "Conectada" : "Usar esta fuente"}</button></div>
+      </div>`).join(""));
+    openModal("#source-modal");
+  } catch (err) { toast(err.message); }
+});
+$("#sources").addEventListener("click", async (e) => {
+  const name = e.target.closest("[data-src]")?.dataset.src; if (!name) return;
+  e.target.disabled = true; e.target.textContent = "Conectando…";
+  try {
+    await api("/api/source", { method: "POST", body: JSON.stringify({ name }) });
+    $("#source-modal").hidden = true;
+    state.rules = null; state.detailKey = ""; state.incSel = null; state.incKey = "";
+    state.table = state.snap.tables[0]?.name || state.table;
+    toast(name === "demo" ? "Volviste a la demo" : `Conectado a ${name.toUpperCase()}: validando sus tablas reales`);
+    render(true);
+  } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = "Usar esta fuente"; }
+});
 $("#btn-demo").addEventListener("click", () => runTour());
 
 function applyTheme(t) { t ? (document.documentElement.dataset.theme = t) : delete document.documentElement.dataset.theme; }

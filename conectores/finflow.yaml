@@ -1,0 +1,72 @@
+# Conector ATLAS ← FINFLOW
+# FINFLOW (pipeline PySpark + dbt) publica sus tablas gold en Parquet y deja un _manifest.json
+# por cada publicación. ATLAS lee ese manifiesto y valida cada fecha procesada, sin escribir nada.
+#
+# La ruta se puede cambiar con la variable ATLAS_FINFLOW_GOLD (por ejemplo, otra carpeta o, más
+# adelante, s3://mi-bucket/gold con credenciales de solo lectura).
+
+fuente: finflow
+titulo: FINFLOW · pipeline financiero
+descripcion: Tablas gold publicadas por FINFLOW (landing → bronze → silver con PySpark → gold con dbt).
+ruta: ../finflow/data/lake/gold
+formato: parquet
+manifiesto: _manifest.json   # opcional: sin manifiesto, ATLAS valida cuando cambian los archivos
+hora_esperada: "07:00"      # FINFLOW debe publicar cada día antes de esta hora (+60 min de gracia)
+responsable: Equipo de Datos · FINFLOW
+correo: datos.finflow@fintech.example
+url_proyecto: https://github.com/diegosaaval
+
+tablas:
+  - nombre: pagos_gold
+    titulo: Pagos (FINFLOW)
+    descripcion: Pagos procesados y deduplicados, con alertas de velocidad y monto.
+    tipo: incremental        # se valida la partición de cada fecha procesada
+    columna_fecha: fecha
+    consumidores: [Indicadores financieros, Prevención de fraude, Conciliación]
+  - nombre: contracargos_gold
+    titulo: Contracargos (FINFLOW)
+    descripcion: Contracargos con el pago original y los días hasta el reclamo.
+    tipo: incremental
+    columna_fecha: fecha
+    consumidores: [Gestión de disputas, Riesgo de comercios]
+  - nombre: indicadores_financieros
+    titulo: Indicadores financieros (FINFLOW)
+    descripcion: TPV, tasa de aprobación, ticket promedio, devoluciones y contracargos por día.
+    tipo: incremental
+    columna_fecha: fecha
+    consumidores: [Comité financiero, Tablero gerencial]
+  - nombre: clientes_gold
+    titulo: Clientes (FINFLOW)
+    descripcion: Estado actual de cada cliente.
+    tipo: snapshot           # foto completa en cada publicación
+    columna_fecha: fecha_vinculacion
+    consumidores: [Conozca a su cliente, Segmentación de riesgo]
+
+reglas:
+  # pagos_gold
+  - {table: pagos_gold, type: unico, severity: critica, params: {columns: [id_pago]}, note: "Un pago duplicado infla el TPV."}
+  - {table: pagos_gold, type: no_nulos, severity: alta, params: {column: id_cliente}}
+  - {table: pagos_gold, type: no_nulos, severity: alta, params: {column: id_comercio}}
+  - {table: pagos_gold, type: rango, severity: alta, params: {column: monto, min: 1}}
+  - {table: pagos_gold, type: valores_permitidos, severity: media, params: {column: estado, values: [approved, declined, pending]}}
+  - {table: pagos_gold, type: valores_permitidos, severity: media, params: {column: medio_pago, values: [card, pse, wallet, transfer]}}
+  - {table: pagos_gold, type: valores_permitidos, severity: media, params: {column: moneda, values: [COP, USD]}}
+  - {table: pagos_gold, type: comparacion, severity: alta, params: {column: monto_cop, operator: ">=", other_column: monto}, note: "En pesos el monto nunca puede ser menor."}
+  - {table: pagos_gold, type: outlier, severity: alta, params: {column: monto_cop, aggregate: suma, z: 4, same_weekday: true}}
+  # contracargos_gold
+  - {table: contracargos_gold, type: unico, severity: critica, params: {columns: [id_contracargo]}}
+  - {table: contracargos_gold, type: rango, severity: alta, params: {column: monto, min: 1}}
+  - {table: contracargos_gold, type: rango, severity: media, params: {column: dias_hasta_contracargo, min: 0, max: 180}}
+  - {table: contracargos_gold, type: valores_permitidos, severity: media, params: {column: motivo, values: [fraud, not_received, not_as_described, duplicate, other]}}
+  # indicadores_financieros
+  - {table: indicadores_financieros, type: unico, severity: critica, params: {columns: [fecha]}}
+  - {table: indicadores_financieros, type: rango, severity: critica, params: {column: tasa_aprobacion, min: 0, max: 1}, note: "Una tasa siempre está entre 0 y 1."}
+  - {table: indicadores_financieros, type: rango, severity: critica, params: {column: tasa_contracargos, min: 0, max: 1}}
+  - {table: indicadores_financieros, type: rango, severity: alta, params: {column: tasa_devolucion, min: 0, max: 1}}
+  - {table: indicadores_financieros, type: comparacion, severity: alta, params: {column: pagos_aprobados, operator: "<=", other_column: pagos}}
+  - {table: indicadores_financieros, type: outlier, severity: alta, params: {column: tasa_aprobacion, aggregate: promedio, z: 4, same_weekday: false}}
+  # clientes_gold
+  - {table: clientes_gold, type: unico, severity: critica, params: {columns: [id_cliente]}}
+  - {table: clientes_gold, type: no_nulos, severity: critica, params: {column: numero_documento}}
+  - {table: clientes_gold, type: valores_permitidos, severity: media, params: {column: tipo_documento, values: [CC, CE, NIT, PP]}}
+  - {table: clientes_gold, type: valores_permitidos, severity: media, params: {column: segmento_riesgo, values: [low, medium, high]}}

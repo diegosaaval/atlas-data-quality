@@ -11,6 +11,7 @@ import os
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from . import __version__, copilot
 from .config import get_settings
 from .engine import Engine
 from .rules import AGGREGATES, OPERATORS, RULE_TYPES, SEVERITIES, SEVERITY_LABEL, Rule
-from .tables import BY_NAME, SCENARIOS_BY_ID, TABLES
+from .tables import BANK_TABLES, BY_NAME, SCENARIOS_BY_ID, TABLES
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -146,7 +147,9 @@ def readyz() -> dict[str, Any]:
 @app.get("/api/meta", tags=["general"])
 def meta() -> dict[str, Any]:
     return {"version": __version__, "github_url": settings.github_url,
-            "copilot": "claude" if os.getenv("ANTHROPIC_API_KEY") else "plantilla", "public_demo": settings.public_demo}
+            "copilot": "claude" if os.getenv("ANTHROPIC_API_KEY") else "plantilla", "public_demo": settings.public_demo,
+            "mode": "conector" if engine.source else "simulacion",
+            "source": engine.source.name if engine.source else None}
 
 
 @app.get("/api/state", tags=["general"])
@@ -285,12 +288,53 @@ def delete_rule(rule_id: str) -> dict[str, bool]:
     return {"deleted": True}
 
 
+# ------------------------------------------------------------- fuentes de datos
+@app.get("/api/sources", tags=["fuentes"])
+def sources() -> dict[str, Any]:
+    from .connectors import list_sources
+
+    demo = {"name": "demo", "title": "Demo · banco simulado", "available": True,
+            "description": "6 tablas bancarias sintéticas con 70 días de historia y anomalías simulables.",
+            "tables": [t.name for t in BANK_TABLES], "path": ""}
+    return {"active": engine.source.name if engine.source else "demo",
+            "sources": [demo] + ([] if settings.public_demo else list_sources())}
+
+
+class SourceRequest(BaseModel):
+    name: str = Field(..., max_length=60)
+
+
+@app.post("/api/source", tags=["fuentes"])
+async def switch_source(body: SourceRequest) -> dict[str, Any]:
+    """Cambia la fuente que monitorea ATLAS: la demo o un conector de conectores/*.yaml."""
+    global settings
+    if settings.public_demo:
+        raise HTTPException(403, "En la demo pública solo está disponible el banco simulado.")
+    name = "" if body.name == "demo" else body.name
+    new = replace(settings, source=name)
+    old = engine.settings
+    engine.settings = new
+    try:
+        await asyncio.to_thread(engine.reset)
+    except Exception as exc:
+        engine.settings = old
+        await asyncio.to_thread(engine.reset)
+        raise HTTPException(422, f"No se pudo conectar: {exc}") from exc
+    settings = new
+    engine.copilot_cache.clear()
+    snap = await publish()
+    return {"active": body.name, "mode": snap["mode"]}
+
+
 # ------------------------------------------------------------- simulación
 @app.post("/api/scenarios/{scenario_id}", tags=["simulación"])
 async def inject(scenario_id: str) -> dict[str, str]:
     if scenario_id not in SCENARIOS_BY_ID:
         raise HTTPException(404, "Escenario no encontrado")
-    result = engine.inject(scenario_id)
+    try:
+        result = engine.inject(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     await publish()
     return result
 
@@ -313,6 +357,8 @@ async def control(body: ControlRequest) -> dict[str, Any]:
             body.speed = 4
     if body.reset:
         await asyncio.to_thread(engine.reset)
+    if engine.source and (body.finish_day or body.next_day):
+        raise HTTPException(409, "Con una fuente real ATLAS no simula días: valida lo que la fuente publique.")
     if body.finish_day or body.next_day:
         await asyncio.to_thread(engine.run_day)
     if body.next_day:

@@ -160,6 +160,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 36px 28px 110px; }
 .today .date::first-letter { text-transform: uppercase; }
 .today .time { font: 600 52px/1.05 var(--rounded); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; margin: 2px 0 4px; }
 .today .sub { font-size: 13px; color: var(--text-3); }
+.source .actions b { font-size: 17px; }
 .timeline-svg { width: 100%; height: 96px; display: block; overflow: visible; }
 .timeline-svg .axis { stroke: var(--fill); stroke-width: 4; stroke-linecap: round; }
 .timeline-svg .done { stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }

@@ -426,7 +426,7 @@ DEFAULT_RULES: list[dict[str, Any]] = [
 
 
 class RuleStore:
-    def __init__(self, path: str | None) -> None:
+    def __init__(self, path: str | None, defaults: list[dict[str, Any]] | None = None) -> None:
         self.path = Path(path) if path else None
         self.lock = threading.RLock()
         self.rules: dict[str, Rule] = {}
@@ -435,7 +435,7 @@ class RuleStore:
                 rule = Rule(**raw)
                 self.rules[rule.id] = rule
         else:
-            for i, raw in enumerate(DEFAULT_RULES, 1):
+            for i, raw in enumerate(DEFAULT_RULES if defaults is None else defaults, 1):
                 rule = Rule(id=f"R{i:03d}", **raw)
                 rule.validate()
                 self.rules[rule.id] = rule

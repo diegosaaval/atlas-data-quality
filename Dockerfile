@@ -6,7 +6,7 @@ WORKDIR /app
 RUN python -m venv /venv
 COPY pyproject.toml README.md ./
 COPY atlas ./atlas
-RUN /venv/bin/pip install ".[ai]"
+RUN /venv/bin/pip install ".[ai,conectores]"
 
 # ---- runtime: small, non-root ---------------------------------------------
 FROM python:3.12-slim AS runtime
