@@ -427,7 +427,8 @@ class Engine:
             if c.type in ("entero", "decimal"):
                 parts += [f"MIN({c.name}) AS \"{c.name}__min\"", f"MAX({c.name}) AS \"{c.name}__max\"",
                           f"AVG({c.name}) AS \"{c.name}__prom\""]
-        row = self.store.query(f"SELECT COUNT(*) AS n, {', '.join(parts)} FROM t_{name} WHERE _fecha_carga = ?",
+        table = "t_" + spec.name  # identifier from the fixed schema, not from the request
+        row = self.store.query(f"SELECT COUNT(*) AS n, {', '.join(parts)} FROM {table} WHERE _fecha_carga = ?",
                                (iso,))[0]
         n = row["n"] or 0
         out = []
@@ -445,11 +446,12 @@ class Engine:
     def preview_rule(self, rule) -> dict[str, Any]:
         """Evaluate a rule against the latest available load of its table without saving it."""
         with self.lock:
-            latest = self.store.scalar(f"SELECT MAX(_fecha_carga) FROM t_{rule.table}")
+            table = rule._table()
+            latest = self.store.scalar(f"SELECT MAX(_fecha_carga) FROM {table}")
             if latest is None:
                 raise ValueError("No hay cargas recientes de esta tabla para probar la regla")
             day = date.fromisoformat(latest)
-            total = self.store.scalar(f"SELECT COUNT(*) FROM t_{rule.table} WHERE _fecha_carga = ?", (latest,))
+            total = self.store.scalar(f"SELECT COUNT(*) FROM {table} WHERE _fecha_carga = ?", (latest,))
             if rule.type == "outlier":  # needs history: report today's value, evaluation starts with the next load
                 value = self.store.scalar(rule.query()[0], {"fecha": latest}) or 0
                 result = CheckResult(rule.table, "preview", rule.describe(), "regla", rule.severity, OK,
