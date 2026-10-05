@@ -20,7 +20,7 @@
 
 > 🇬🇧 *ATLAS monitors the tables other teams load every day: SLA-based availability, weekday-aware volume anomalies, schema checks, business rules compiled to SQL, standard-deviation outliers, and one incident per table with evidence and an AI-drafted escalation email. Deterministic checks decide; AI only explains.*
 
-🟢 **Demo en vivo:** _(pendiente de despliegue)_ · ▶️ **[Ver el video demostrativo en YouTube (2:47)](https://youtu.be/R8pWRAv-FZo)** · 📄 **[Decisiones de diseño](docs/DISENO.md)**
+🟢 **[Probar la demo en vivo](https://atlas-data-quality.onrender.com)** *(si lleva rato sin visitas, tarda cerca de un minuto en despertar)* · ▶️ **[Ver el video demostrativo en YouTube (2:47)](https://youtu.be/R8pWRAv-FZo)** · 📄 **[Decisiones de diseño](docs/DISENO.md)**
 
 ---
 
@@ -249,7 +249,7 @@ run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 ## Hoja de ruta
 
 - [x] Monitor sobre tablas simuladas, reglas configurables, incidentes y copiloto
-- [ ] Despliegue público con Docker
+- [x] Despliegue público con Docker en Render: https://atlas-data-quality.onrender.com
 - [ ] Conector a una base real (PostgreSQL / SQL Server, solo lectura)
 - [ ] Conector cloud (S3 + Athena con IAM de solo lectura)
 - [ ] Monitorear las tablas gold de **FINFLOW**, mi pipeline financiero en AWS

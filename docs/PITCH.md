@@ -82,5 +82,5 @@ Hay empresas enteras dedicadas solo a esto (Monte Carlo, Soda, Great Expectation
 
 1. Sube el repo a GitHub (público), cambia `diegosaaval` en el README y en `ATLAS_GITHUB_URL`.
 2. ~~Grabar el video~~ Listo: https://youtu.be/R8pWRAv-FZo
-3. Despliégalo gratis (Render, Fly.io o Railway con el Dockerfile) y pon el link en tu CV y en LinkedIn.
+3. ~~Desplegarlo~~ Listo: https://atlas-data-quality.onrender.com. Pon el link en tu CV y en LinkedIn.
 4. Próxima mejora con impacto: un conector a una base real (PostgreSQL o SQL Server) para validar tablas propias.
