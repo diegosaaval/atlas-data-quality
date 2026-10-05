@@ -23,7 +23,7 @@ def hhmm(minutes: int) -> str:
 
 
 def availability(spec: TableSpec, arrived: int | None, now: int) -> CheckResult:
-    check = CheckResult(spec.name, "disponibilidad", "La tabla del día está disponible", "monitor", "critica", OK, "", rule_type="disponibilidad",
+    check = CheckResult(spec.name, "disponibilidad", "Disponibilidad de la tabla del día", "monitor", "critica", OK, "", rule_type="disponibilidad",
                         threshold=f"antes de {hhmm(spec.expected_at + GRACE_MINUTES)}")
     late = (arrived if arrived is not None else now) - spec.expected_at
     if arrived is None:
@@ -44,7 +44,7 @@ def availability(spec: TableSpec, arrived: int | None, now: int) -> CheckResult:
 def volume(spec: TableSpec, rows: int, store: Store, day: date) -> CheckResult:
     iso = day.isoformat()
     same_weekday = spec.load_type == "incremental"
-    check = CheckResult(spec.name, "volumen", "Cantidad de registros normal", "monitor", "alta", OK, "", rule_type="volumen",
+    check = CheckResult(spec.name, "volumen", "Volumen de registros", "monitor", "alta", OK, "", rule_type="volumen",
                         value=rows, total_rows=rows)
     store.put_metric(iso, spec.name, "filas", rows)
     history = store.metric_history(spec.name, "filas:base", iso, 60)
@@ -86,7 +86,7 @@ def structure(spec: TableSpec, received: list[str]) -> CheckResult:
     expected = set(spec.column_names)
     got = set(received)
     missing, extra = sorted(expected - got), sorted(got - expected)
-    check = CheckResult(spec.name, "estructura", "Trae las columnas esperadas", "monitor", "alta", OK, "", rule_type="estructura",
+    check = CheckResult(spec.name, "estructura", "Estructura de columnas", "monitor", "alta", OK, "", rule_type="estructura",
                         value=len(missing) + len(extra), threshold=f"{len(expected)} columnas")
     if missing:
         check.status = FAIL

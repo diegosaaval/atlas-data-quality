@@ -25,7 +25,8 @@ def store():
     rows[2]["canal"] = "fax"
     rows.append(pagos(id_pago="PG-3"))  # duplicado
     s.insert_load(BY_NAME["pagos"], ISO, "07:00", rows, BY_NAME["pagos"].column_names)
-    return s
+    yield s
+    s.close()
 
 
 def rule(type_, **params):

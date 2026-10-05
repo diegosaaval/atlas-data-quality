@@ -219,9 +219,12 @@ class Rule:
 
 
 def _n(v: float | None) -> str:
+    """Formato colombiano: 48.159.795.968 · 4,18 · -7,73."""
     if v is None:
         return "—"
-    return f"{v:,.0f}".replace(",", ".") if float(v).is_integer() else f"{v:,.2f}"
+    if float(v).is_integer() or abs(v) >= 1000:
+        return f"{v:,.0f}".replace(",", ".")
+    return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 # --------------------------------------------------------------------- evaluation

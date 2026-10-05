@@ -26,6 +26,7 @@ def test_volume_learns_weekday_pattern_and_flags_drops_and_spikes():
     assert monitors.volume(PAGOS, 250, store, DAY).status == "falla"   # carga parcial
     assert monitors.volume(PAGOS, 1400, store, DAY).status == "falla"  # duplicada
     assert "un lunes" in monitors.volume(PAGOS, 700, store, DAY).message
+    store.close()
 
 
 def test_structure():

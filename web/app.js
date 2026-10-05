@@ -65,6 +65,7 @@ function setView(v) {
   $$(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   $$(".view").forEach((x) => x.classList.toggle("active", x.dataset.view === v));
   store.set("atlas.view", v);
+  if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v);
   render(true);
 }
 function render(force = false) {
@@ -596,6 +597,11 @@ async function runTour() {
 
 // ---------------------------------------------------------------------- inicio
 api("/api/meta").then((m) => ($("#gh-link").href = m.github_url)).catch(() => {});
-const saved = store.get("atlas.view", "resumen");
+// La vista inicial sale del enlace (/#incidentes) o de la última visitada.
+const [hashView, hashArg] = location.hash.slice(1).split("/");
+if (hashArg && hashView === "tablas") state.table = hashArg;
+if (hashArg && hashView === "incidentes") state.incSel = hashArg;
+const saved = $(`.view[data-view="${hashView}"]`) ? hashView : store.get("atlas.view", "resumen");
 if ($(`.view[data-view="${saved}"]`)) setView(saved);
+addEventListener("hashchange", () => { const v = location.hash.slice(1).split("/")[0]; if ($(`.view[data-view="${v}"]`)) setView(v); });
 connect();
