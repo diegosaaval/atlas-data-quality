@@ -34,6 +34,19 @@ Also: a **2-minute guided demo** (`d`), **chaos mode** (random faults that auto-
 
 ## Quickstart
 
+**One click** (only needs Python 3.11+, the launcher offers to install it if missing):
+
+| OS | Do this |
+|---|---|
+| Windows | double-click **`start.bat`** |
+| macOS | double-click **`start.command`** (first time: right-click → Open) |
+| Linux | `./start.sh` |
+
+It creates `.venv`, installs dependencies (first run only), picks a free port, starts the server and opens the browser.
+`start.bat --test` runs the test suite; `--reinstall` rebuilds the environment.
+
+With Docker:
+
 ```bash
 docker compose up --build              # http://localhost:8000
 ```
