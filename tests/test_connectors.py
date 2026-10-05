@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import duckdb
 import pytest
@@ -34,13 +34,13 @@ def write_gold(folder, days=10, dup_on=None, published="2026-10-05T12:00:00+00:0
                                                        "published_at": published, "datasets": {}}))
 
 
-def write_config(path, gold):
+def write_config(path, gold, expected="23:59"):
     path.write_text(f"""
 fuente: prueba
 titulo: Fuente de prueba
 ruta: {gold}
 manifiesto: _manifest.json
-hora_esperada: "23:59"   # el test no debe depender de la zona horaria de la máquina
+hora_esperada: "{expected}"   # por defecto 23:59: el test no depende de la zona horaria
 tablas:
   - {{nombre: pagos_gold, tipo: incremental, columna_fecha: fecha}}
   - {{nombre: indicadores_financieros, tipo: incremental, columna_fecha: fecha}}
@@ -102,6 +102,24 @@ def test_republishing_a_day_replaces_it_instead_of_duplicating(source):
     assert n == 60
     checks = engine.store.scalar("SELECT COUNT(*) FROM check_results WHERE tabla = 'pagos_gold' AND fecha = '2026-09-10'")
     assert checks == len(engine.tables["pagos_gold"].results)
+
+
+def test_backfilled_dates_are_not_flagged_late_but_daily_publications_are(tmp_path):
+    gold, cfg = tmp_path / "gold", tmp_path / "prueba.yaml"
+    write_gold(gold)  # septiembre publicado el 5 de octubre: un backfill
+    write_config(cfg, gold, expected="00:30")
+    engine = Engine(Settings(source="prueba", source_config=str(cfg), rules_path=None, random_anomalies=False))
+    try:
+        assert all(t["status"] == "ok" for t in engine.snapshot()["tables"])
+        # la publicación diaria del 11 de septiembre llega al día siguiente a las 12:00 (hora local): tarde
+        daily = datetime(2026, 9, 12, 12, 0).astimezone().isoformat()
+        write_gold(gold, days=11, published=daily)
+        engine._sync()  # sin tick: el reloj real (octubre) abriría además el aviso de "no ha publicado hoy"
+        availability = engine.tables["pagos_gold"].results[0]
+        assert availability.check_id == "disponibilidad" and availability.status == "advertencia"
+    finally:
+        engine.close()
+        tables.use_tables(tables.BANK_TABLES)
 
 
 def test_csv_source_without_manifest_validates_when_files_change(tmp_path):

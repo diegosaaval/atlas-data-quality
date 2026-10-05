@@ -80,6 +80,7 @@ class Engine:
                 self.store.close()
             # Fuente: banco simulado (demo) o un conector con tablas reales (conectores/<nombre>.yaml).
             self.source = None
+            self._reprocessed_at: datetime | None = None
             if s.source:
                 from .connectors import load_source
 
@@ -157,6 +158,9 @@ class Engine:
         pending = [d for d in dates if d.isoformat() not in self._processed] or dates
         minute = published.hour * 60 + published.minute
         for i, day in enumerate(pending):
+            # Una fecha publicada días después (backfill o re-proceso) no se juzga por la hora de llegada:
+            # la puntualidad se mide en la publicación diaria normal (el mismo día o el siguiente).
+            self._reprocessed_at = published if published.date() > day + timedelta(days=1) else None
             last = i == len(pending) - 1
             self.today, self.minute = day, minute
             iso = day.isoformat()
@@ -176,6 +180,7 @@ class Engine:
             self.store.forget_day("_global", iso)
             self._close_day()
             self._processed.add(iso)
+        self._reprocessed_at = None
         self._fingerprint = fp
         self._overdue_day = None
         self.source_info = {"status": "ok", "published_at": published.isoformat(timespec="minutes"),
@@ -286,7 +291,13 @@ class Engine:
         st.arrived = arrived
         rows = st.load.rows
         self.store.insert_load(spec, iso, hhmm(arrived), rows, st.load.columns)
-        results = [monitors.availability(spec, arrived, self.minute),
+        availability = monitors.availability(spec, arrived, self.minute)
+        reprocessed = self._reprocessed_at
+        if reprocessed is not None:
+            availability.status, availability.value = OK, 0
+            availability.message = (f"Fecha publicada en un re-proceso ({reprocessed:%Y-%m-%d %H:%M}); "
+                                    "la puntualidad se mide en la publicación diaria.")
+        results = [availability,
                    monitors.volume(spec, len(rows), self.store, self.today),
                    monitors.structure(spec, st.load.columns)]
         results += [evaluate(rule, self.store, self.today, len(rows)) for rule in self.rules.for_table(name)]
