@@ -10,12 +10,13 @@ import contextlib
 import json
 import os
 import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -78,6 +79,46 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ATLAS · Monitor de calidad de datos", version=__version__, lifespan=lifespan,
               description="Valida las tablas que se cargan cada día y gestiona los incidentes de calidad.")
+
+
+# ------------------------------------------------------------------ seguridad
+SECURITY_HEADERS = {
+    # La interfaz solo carga recursos propios; los estilos en línea vienen de los gráficos SVG.
+    "Content-Security-Policy": ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                                "img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; "
+                                "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
+_writes: dict[str, deque[float]] = defaultdict(deque)
+
+
+@app.middleware("http")
+async def security(request: Request, call_next):
+    if settings.public_demo and request.method in WRITE_METHODS:
+        ip = request.client.host if request.client else "?"
+        now, window = time.monotonic(), _writes[ip]
+        while window and now - window[0] > 60:
+            window.popleft()
+        if len(window) >= settings.max_writes_per_minute:
+            return JSONResponse({"detail": "Demasiadas acciones seguidas. Espera un minuto e inténtalo de nuevo."},
+                                status_code=429, headers={"Retry-After": "60"})
+        window.append(now)
+        if len(_writes) > 5000:  # no acumular memoria con IPs viejas
+            for key in [k for k, v in _writes.items() if not v or now - v[-1] > 60]:
+                del _writes[key]
+    response = await call_next(request)
+    host = request.headers.get("host", "")
+    for name, value in SECURITY_HEADERS.items():
+        if name == "Content-Security-Policy":
+            if request.url.path.startswith("/docs"):
+                continue  # la documentación interactiva de FastAPI carga Swagger UI desde un CDN
+            value = value.replace("connect-src 'self'", f"connect-src 'self' ws://{host} wss://{host}")
+        response.headers.setdefault(name, value)
+    return response
 
 
 async def publish() -> dict[str, Any]:
@@ -318,6 +359,9 @@ def metrics() -> str:
 # ---------------------------------------------------------------- tiempo real
 @app.websocket("/ws")
 async def websocket(ws: WebSocket) -> None:
+    if len(hub.clients) >= settings.max_ws_clients:
+        await ws.close(code=1013)  # intenta más tarde: demasiadas conexiones
+        return
     await ws.accept()
     hub.clients.add(ws)
     try:
