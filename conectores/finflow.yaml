@@ -15,6 +15,7 @@ hora_esperada: "07:00"      # FINFLOW debe publicar cada día antes de esta hora
 responsable: Equipo de Datos · FINFLOW
 correo: datos.finflow@fintech.example
 url_proyecto: https://github.com/diegosaaval
+url_corrida: "http://localhost:8100/#run={run_id}"   # pantalla de etapas de FINFLOW (finflow ui)
 
 tablas:
   - nombre: pagos_gold

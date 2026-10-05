@@ -40,6 +40,7 @@ fuente: prueba
 titulo: Fuente de prueba
 ruta: {gold}
 manifiesto: _manifest.json
+url_corrida: "http://localhost:8100/#run={{run_id}}"
 hora_esperada: "{expected}"   # por defecto 23:59: el test no depende de la zona horaria
 tablas:
   - {{nombre: pagos_gold, tipo: incremental, columna_fecha: fecha}}
@@ -91,6 +92,10 @@ def test_new_publication_with_duplicates_opens_an_incident(source):
     engine.tick()
     inc = [i for i in engine.incidents.values() if i.table == "pagos_gold" and i.resolved is None]
     assert inc and any(c["rule_type"] == "unico" for c in inc[0].checks)
+    # el incidente enlaza a la corrida del pipeline que trajo la carga con falla
+    data = engine.incident_dict(inc[0])
+    assert data["run_id"] == "run-11" and data["run_url"] == "http://localhost:8100/#run=run-11"
+    assert engine.snapshot()["source"]["run_url"] == "http://localhost:8100/#run=run-11"
     assert engine.snapshot()["source"]["dates"] == 11
 
 
@@ -117,6 +122,21 @@ def test_backfilled_dates_are_not_flagged_late_but_daily_publications_are(tmp_pa
         engine._sync()  # sin tick: el reloj real (octubre) abriría además el aviso de "no ha publicado hoy"
         availability = engine.tables["pagos_gold"].results[0]
         assert availability.check_id == "disponibilidad" and availability.status == "advertencia"
+    finally:
+        engine.close()
+        tables.use_tables(tables.BANK_TABLES)
+
+
+def test_connecting_after_an_incremental_run_still_loads_the_whole_history(tmp_path):
+    gold, cfg = tmp_path / "gold", tmp_path / "prueba.yaml"
+    write_gold(gold)
+    manifest = json.loads((gold / "_manifest.json").read_text())
+    manifest["dates"] = manifest["dates"][-1:]  # la última corrida solo procesó un día
+    (gold / "_manifest.json").write_text(json.dumps(manifest))
+    write_config(cfg, gold)
+    engine = Engine(Settings(source="prueba", source_config=str(cfg), rules_path=None, random_anomalies=False))
+    try:
+        assert engine.snapshot()["source"]["dates"] == 10
     finally:
         engine.close()
         tables.use_tables(tables.BANK_TABLES)

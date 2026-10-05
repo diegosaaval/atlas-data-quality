@@ -41,6 +41,9 @@ def availability(spec: TableSpec, arrived: int | None, now: int) -> CheckResult:
     return check
 
 
+SPARSE_ROWS = 30  # por debajo de esto, contar 0, 3 o 13 eventos en un día es variación normal
+
+
 def volume(spec: TableSpec, rows: int, store: Store, day: date) -> CheckResult:
     iso = day.isoformat()
     same_weekday = spec.load_type == "incremental"
@@ -49,8 +52,10 @@ def volume(spec: TableSpec, rows: int, store: Store, day: date) -> CheckResult:
     store.put_metric(iso, spec.name, "filas", rows)
     history = store.metric_history(spec.name, "filas:base", iso, 60)
     typical = statistics.median([v for _, v in history]) if history else 0
+    if typical < SPARSE_ROWS:  # pocos eventos al día (p. ej. contracargos): un solo día de la semana es muy poca muestra
+        same_weekday = False
     # Counts fluctuate at least like a Poisson process: never use a band tighter than sqrt(n).
-    stats = baseline(history, day, same_weekday, min_spread=math.sqrt(typical))
+    stats = baseline(history, day, same_weekday, min_spread=max(1.0, math.sqrt(typical)))
     if stats is None:
         check.message = f"{rows:,} registros (aún sin historia suficiente)".replace(",", ".")
         check.threshold = "requiere ≥ 4 días comparables"
@@ -59,23 +64,27 @@ def volume(spec: TableSpec, rows: int, store: Store, day: date) -> CheckResult:
     mean, std = stats
     z = 3.5
     lo, hi = max(0.0, mean - z * std), mean + z * std
+    if typical < SPARSE_ROWS:
+        # Con pocos eventos al día el conteo es ruidoso: solo un salto grande es señal. Las filas
+        # repetidas de una tabla así las detecta la regla de unicidad, no el volumen.
+        lo, hi = 0.0, max(hi, 3 * mean, SPARSE_ROWS)
     store.put_metric(iso, spec.name, "filas:lo", lo)
     store.put_metric(iso, spec.name, "filas:hi", hi)
     store.put_metric(iso, spec.name, "filas:esperado", mean)
     scope = f"un {DAYS_ES[day.weekday()]}" if same_weekday else "estos días"
     check.threshold = f"entre {lo:,.0f} y {hi:,.0f}".replace(",", ".")
     fmt = lambda v: f"{v:,.0f}".replace(",", ".")  # noqa: E731
-    if rows == 0:
+    if rows == 0 and lo > 0:
         check.status = FAIL
         check.message = f"La carga llegó vacía: 0 registros. Lo normal {scope} es ~{fmt(mean)}."
     elif rows < lo:
         check.status = FAIL
-        check.message = (f"Llegaron {fmt(rows)} registros, {100 * (1 - rows / mean):.0f}% menos de lo normal {scope} "
+        check.message = (f"Llegaron {fmt(rows)} registros, {100 * (1 - rows / max(mean, 1)):.0f}% menos de lo normal {scope} "
                          f"(~{fmt(mean)}). Posible carga incompleta.")
     elif rows > hi:
         check.status = FAIL
-        check.message = (f"Llegaron {fmt(rows)} registros, {rows / mean:.1f} veces lo normal {scope} (~{fmt(mean)}). "
-                         "Posible duplicación.")
+        times = f"{rows / mean:.1f} veces lo normal" if mean >= 1 else "muy por encima de lo normal"
+        check.message = f"Llegaron {fmt(rows)} registros, {times} {scope} (~{fmt(mean)}). Posible duplicación."
     else:
         check.message = f"{fmt(rows)} registros (normal {scope}: {fmt(lo)} – {fmt(hi)})."
         store.put_metric(iso, spec.name, "filas:base", rows)

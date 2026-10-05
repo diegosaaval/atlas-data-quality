@@ -16,6 +16,7 @@ manifiesto: ""                   # opcional (ver abajo)
 hora_esperada: "07:00"           # antes de esta hora (+60 min) debe haber datos nuevos
 responsable: Equipo Comercial
 correo: comercial@empresa.example
+url_corrida: ""                  # opcional: enlace a cada corrida del pipeline, con {run_id}
 
 tablas:
   - nombre: ventas               # lee ventas.parquet (o usa "archivo: otro_nombre.parquet")

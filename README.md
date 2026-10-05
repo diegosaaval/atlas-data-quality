@@ -149,6 +149,8 @@ ATLAS                                    ▼
 
 Con FINFLOW en la carpeta vecina (`../finflow`), basta con elegir **FINFLOW** en *Fuente de datos* o arrancar con `./start.sh --fuente finflow`.
 
+Los dos proyectos se enlazan en ambos sentidos: la pantalla de etapas de FINFLOW tiene **Ver en ATLAS**, y cada incidente de ATLAS tiene **Ver la corrida que la trajo**, que abre la corrida exacta de FINFLOW (sus etapas, filas y cuarentena). Así se pasa del síntoma ("la tasa de aprobación cayó") a la causa en el pipeline en un clic.
+
 ## Datos de ejemplo
 
 Un banco sintético (determinístico por semilla) carga cada mañana 6 tablas con comportamiento realista: cartera estable de ~1.800 créditos, mora entre 3% y 6%, fines de semana con menos movimiento. Arranca con **70 días de historia**, incluidos incidentes pasados, para que las tendencias tengan sentido desde el primer minuto.

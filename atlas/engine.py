@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 from . import monitors
 from .config import Settings, get_settings
@@ -55,6 +56,7 @@ class Incident:
     resolution: str | None = None
     scenario: str | None = None
     loads_failed: int = 1
+    run_id: str | None = None  # corrida de la fuente (p. ej. FINFLOW) que trajo la carga con falla
     _last_day: str = ""
 
     def minutes_open(self, now: tuple[str, int]) -> int:
@@ -81,6 +83,7 @@ class Engine:
             # Fuente: banco simulado (demo) o un conector con tablas reales (conectores/<nombre>.yaml).
             self.source = None
             self._reprocessed_at: datetime | None = None
+            self._run_id: str | None = None
             if s.source:
                 from .connectors import load_source
 
@@ -152,11 +155,14 @@ class Engine:
         if manifest:
             published = datetime.fromisoformat(str(manifest["published_at"])).astimezone()
             dates = sorted({date.fromisoformat(d) for d in manifest.get("dates", [])}) or [published.date()]
+            if self._bootstrapping:  # al conectarse, valida toda la historia publicada, no solo la última corrida
+                dates = sorted(set(dates) | {d for d in src.available_dates() if d <= dates[-1]})
         else:
             published = datetime.fromtimestamp(max(f.stat().st_mtime for f in src.files.values() if f.exists()))
             dates = [published.date()]
         pending = [d for d in dates if d.isoformat() not in self._processed] or dates
         minute = published.hour * 60 + published.minute
+        self._run_id = (manifest or {}).get("run_id")
         for i, day in enumerate(pending):
             # Una fecha publicada días después (backfill o re-proceso) no se juzga por la hora de llegada:
             # la puntualidad se mide en la publicación diaria normal (el mismo día o el siguiente).
@@ -185,10 +191,17 @@ class Engine:
         self._overdue_day = None
         self.source_info = {"status": "ok", "published_at": published.isoformat(timespec="minutes"),
                             "run_id": (manifest or {}).get("run_id"), "dates": len(self._processed),
-                            "last_date": max(self._processed), "datasets": (manifest or {}).get("datasets", {})}
+                            "last_date": max(self._processed), "datasets": (manifest or {}).get("datasets", {}),
+                            "run_url": self._run_url(self._run_id)}
         if not self._bootstrapping:
             self.log("info", f"{src.title} publicó {len(pending)} fecha(s) nuevas; validadas.")
         return True
+
+    def _run_url(self, run_id: str | None) -> str | None:
+        """Enlace a la corrida en la herramienta de la fuente (p. ej. la pantalla de etapas de FINFLOW)."""
+        if not (self.source and self.source.run_url and run_id):
+            return None
+        return self.source.run_url.replace("{run_id}", quote(str(run_id), safe=""))
 
     def _suggest_rules(self, name: str) -> None:
         """Tablas sin reglas: ATLAS lee su perfil y propone reglas iniciales (una sola vez)."""
@@ -359,7 +372,8 @@ class Engine:
             if inc is None:
                 self._seq += 1
                 inc = Incident(f"INC-{self._seq:04d}", name, main.severity, self.now,
-                               f"{main.name}", scenario=self.tables[name].scenario, _last_day=iso)
+                               f"{main.name}", scenario=self.tables[name].scenario, run_id=self._run_id,
+                               _last_day=iso)
                 self.incidents[inc.id] = inc
                 self._timeline(inc, "detectado", f"Detectado: {main.message}")
                 if main.severity == "critica":
@@ -369,6 +383,7 @@ class Engine:
             elif inc._last_day != iso:
                 inc.loads_failed += 1
                 inc._last_day = iso
+                inc.run_id = self._run_id or inc.run_id
                 self._timeline(inc, "persiste", f"La carga del {iso} sigue fallando: {main.message}")
             if SEVERITY_WEIGHT[main.severity] > SEVERITY_WEIGHT[inc.severity]:
                 self._timeline(inc, "escalado", f"Severidad sube a {SEVERITY_LABEL[main.severity]}.")
@@ -456,6 +471,7 @@ class Engine:
             "opened_date": inc.opened[0], "opened_time": hhmm(inc.opened[1]), "owner": spec.owner,
             "owner_email": spec.owner_email, "minutes_open": minutes, "loads_failed": inc.loads_failed,
             "resolution": inc.resolution, "failing_checks": len(inc.checks), "simulated": inc.scenario is not None,
+            "run_id": inc.run_id, "run_url": self._run_url(inc.run_id),
         }
         if full:
             since = (date.fromisoformat(inc.opened[0]) - timedelta(days=30)).isoformat()

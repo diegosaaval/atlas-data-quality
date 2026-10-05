@@ -117,6 +117,7 @@ function renderResumen(s) {
         <p class="muted small" style="margin:8px 0">${esc(src.description)}</p>
         <p class="chips">${Object.entries(src.datasets || {}).map(([n, c]) => `<span>${esc(n)} · ${nf(c)} filas</span>`).join("") || s.tables.map((t) => `<span>${esc(t.name)}</span>`).join("")}</p>
         <p class="small muted" style="margin:10px 0 0">Publicación esperada antes de las ${esc(src.expected_at)} (+60 min de gracia) · <span class="mono">${esc(src.path)}</span></p>
+        ${src.run_url ? `<p style="margin:12px 0 0"><a class="btn" href="${esc(src.run_url)}" target="_blank" rel="noopener">Ver la corrida en ${esc(src.name.toUpperCase())} ↗</a></p>` : ""}
       </div>`);
   } else {
   setHTML($("#today"), `
@@ -382,6 +383,7 @@ function renderIncidentDetail() {
         <p class="small muted" style="margin:0">Tabla <code>${esc(i.table)}</code> · Responsable <b>${esc(i.owner)}</b> · Abierto ${esc(i.opened_date)} ${esc(i.opened_time)}</p>
       </div>
       <div class="actions">
+        ${i.run_url ? `<a class="btn" href="${esc(i.run_url)}" target="_blank" rel="noopener" title="Corrida ${esc(i.run_id)}">Ver la corrida que la trajo ↗</a>` : ""}
         <button class="btn" id="btn-email" ${done ? "disabled" : ""}>✉ Redactar correo de escalamiento</button>
         <button class="btn primary" id="btn-resolve" ${done ? "disabled" : ""}>Marcar resuelto</button>
       </div>

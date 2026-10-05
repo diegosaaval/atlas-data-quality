@@ -108,6 +108,7 @@ select, input, textarea, .btn, .icon-btn {
 }
 .btn, .icon-btn, select { cursor: pointer; transition: background .15s, transform .1s, filter .15s; }
 .btn { border-radius: 980px; padding: 7px 16px; font-weight: 500; }
+a.btn { display: inline-block; text-decoration: none; }
 .icon-btn { width: 32px; height: 32px; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; line-height: 1; }
 .btn:hover, .icon-btn:hover, select:hover { background: var(--fill); }
 .btn:active, .icon-btn:active { transform: scale(0.97); }

@@ -71,6 +71,7 @@ class ParquetSource:
     rules: list[dict[str, Any]] = field(default_factory=list)
     files: dict[str, Path] = field(default_factory=dict)
     auto_rules: set[str] = field(default_factory=set)
+    run_url: str = ""  # plantilla con {run_id}: enlace a la corrida en la herramienta de la fuente
 
     # ------------------------------------------------------------------ lectura
     def _file(self, table: str) -> Path:
@@ -95,6 +96,24 @@ class ParquetSource:
             return str(manifest["published_at"])
         stamps = [f.stat().st_mtime for f in self.files.values() if f.exists()]
         return f"mtime:{max(stamps):.0f}" if stamps else ""
+
+    def available_dates(self) -> set[date]:
+        """Fechas presentes en las tablas incrementales (la historia completa que ya está publicada)."""
+        import duckdb
+
+        out: set[date] = set()
+        con = duckdb.connect(":memory:")
+        try:
+            for spec in self.tables:
+                col, file = self.date_columns.get(spec.name), self.files.get(spec.name)
+                if self.load_types.get(spec.name) != "incremental" or not col or not file or not file.exists():
+                    continue
+                rel = _relation(con, file)
+                if col in rel.columns:
+                    out |= {d for (d,) in rel.project(f'CAST("{col}" AS DATE)').distinct().fetchall() if d}
+        finally:
+            con.close()
+        return out
 
     def read(self, spec: TableSpec, day: date | None) -> tuple[list[dict[str, Any]], list[str]]:
         """Filas de una tabla: la partición de `day` (incremental) o la foto completa (snapshot)."""
@@ -198,7 +217,7 @@ def load_source(name: str, config: str | None = None, path_override: str | None 
     return ParquetSource(cfg.get("fuente", name), cfg.get("titulo", name), cfg.get("descripcion", ""), base,
                          cfg.get("manifiesto", ""), h * 60 + m, cfg.get("responsable", name),
                          cfg.get("correo", ""), cfg.get("url_proyecto", ""), specs, load_types, date_columns,
-                         rules, files, auto)
+                         rules, files, auto, cfg.get("url_corrida", ""))
 
 
 def list_sources() -> list[dict[str, Any]]:

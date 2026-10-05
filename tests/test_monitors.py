@@ -29,6 +29,22 @@ def test_volume_learns_weekday_pattern_and_flags_drops_and_spikes():
     store.close()
 
 
+def test_volume_of_sparse_tables_compares_against_all_days():
+    store = Store()  # pocos eventos al día, como los contracargos: 0 a 10 por día, sin patrón semanal
+    for i, rows in enumerate([1, 0, 2, 4, 2, 3, 7, 4, 4, 6, 3, 9, 10, 3, 10, 7, 5, 8, 0, 6, 9]):
+        monitors.volume(PAGOS, rows, store, DAY - timedelta(days=21 - i))
+    assert monitors.volume(PAGOS, 13, store, DAY).status == "ok"  # un día movido, no una duplicación
+    assert monitors.volume(PAGOS, 0, store, DAY).status == "ok"   # un día sin eventos es posible
+    assert monitors.volume(PAGOS, 120, store, DAY).status == "falla"
+    store.close()
+    store = Store()  # una tabla que casi siempre viene vacía no debe dividir por cero
+    for i in range(10):
+        monitors.volume(PAGOS, 0, store, DAY - timedelta(days=10 - i))
+    assert monitors.volume(PAGOS, 1, store, DAY).status == "ok"
+    assert "muy por encima" in monitors.volume(PAGOS, 50, store, DAY).message
+    store.close()
+
+
 def test_structure():
     cols = PAGOS.column_names
     assert monitors.structure(PAGOS, cols).status == "ok"
