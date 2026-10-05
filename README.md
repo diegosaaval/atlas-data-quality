@@ -18,7 +18,7 @@
 
 > 🇬🇧 *ATLAS monitors the tables other teams load every day: SLA-based availability, weekday-aware volume anomalies, schema checks, business rules compiled to SQL, standard-deviation outliers, and one incident per table with evidence and an AI-drafted escalation email. Deterministic checks decide; AI only explains.*
 
-🟢 **Demo en vivo:** _(pendiente de despliegue)_ · ▶️ **Video de 90 s:** _(pendiente)_ · 📄 **[Decisiones de diseño](docs/DISENO.md)**
+🟢 **Demo en vivo:** _(pendiente de despliegue)_ · ▶️ **Video demo (2:47):** _(pendiente de subir a YouTube)_ · 📄 **[Decisiones de diseño](docs/DISENO.md)**
 
 ---
 
