@@ -202,7 +202,7 @@ class Rule:
         """SQL condition selecting the *bad* rows, plus its bound parameters."""
         p = self.params
         if self.type == "sql":
-            return f"({p['condition']})", {}  # user SQL by design: runs read-only and time-boxed
+            return None  # user SQL never goes through here: see user_condition()
         col = self._col(p.get("column"))
         if self.type == "no_nulos":
             return f"{col} IS NULL OR TRIM(CAST({col} AS TEXT)) = ''", {}
@@ -226,8 +226,15 @@ class Rule:
             return f"{col} IS NULL OR {col} <> :fecha", {}
         return None
 
+    def user_condition(self) -> str:
+        """The analyst's own SQL condition. By design it is user-written SQL, so it may only be run
+        through Store.query_readonly (read-only, time-boxed, row-capped)."""
+        return "(" + self.params["condition"] + ")"
+
     def query(self) -> tuple[str, dict[str, Any]]:
-        """Executable SQL for this rule (bad rows, duplicate groups or the daily aggregate)."""
+        """Executable SQL for built-in rule types (bad rows, duplicate groups or the daily aggregate)."""
+        if self.type == "sql":
+            raise ValueError("Las reglas SQL personalizadas se ejecutan con user_condition()")
         table = self._table()
         if self.type == "unico":
             cols = ", ".join(self._col(c) for c in self.params["columns"])
@@ -242,6 +249,8 @@ class Rule:
 
     def sql(self) -> str:
         """Readable SQL for people: bound values shown inline (never executed)."""
+        if self.type == "sql":
+            return f"SELECT * FROM {self._table()}\nWHERE _fecha_carga = :fecha\n  AND {self.user_condition()}"
         text, binds = self.query()
         for key in sorted(binds, key=len, reverse=True):
             value = binds[key]
@@ -280,21 +289,26 @@ def evaluate(rule: Rule, store: Store, day: date, total_rows: int) -> CheckResul
                             f"{' + '.join(rule.params['columns'])}" if extra else "Sin duplicados").replace(",", ".")
             return base
 
-        cond, binds = rule.bad_rows_condition()
-        binds = {"fecha": iso, **binds}
         table = rule._table()
-        run = store.query_readonly if rule.type == "sql" else store.query
-        bad = run(f"SELECT COUNT(*) AS n FROM {table} WHERE _fecha_carga = :fecha AND ({cond})", binds)[0]["n"]
+        cols = ", ".join(BY_NAME[rule.table].column_names)
+        base_sql = f"FROM {table} WHERE _fecha_carga = :fecha AND "
+        if rule.type == "sql":
+            # User-written SQL: only ever executed by the sandboxed, read-only, time-boxed runner.
+            user = rule.user_condition()
+            bad = store.query_readonly(f"SELECT COUNT(*) AS n {base_sql}({user})", {"fecha": iso})[0]["n"]
+            examples = store.query_readonly(f"SELECT {cols} {base_sql}({user}) LIMIT 5", {"fecha": iso}) if bad else []
+        else:
+            cond, binds = rule.bad_rows_condition()
+            binds = {"fecha": iso, **binds}
+            bad = store.query(f"SELECT COUNT(*) AS n {base_sql}({cond})", binds)[0]["n"]
+            examples = store.query(f"SELECT {cols} {base_sql}({cond}) LIMIT 5", binds) if bad else []
         base.failing_rows = bad
+        base.examples = examples
         pct = 100 * bad / total_rows if total_rows else 0.0
         base.value = round(pct, 3)
         tolerance = float(rule.params.get("max_pct", 0) or 0)
         base.threshold = f"≤ {tolerance:g}% de registros"
         base.status = FAIL if bad and pct > tolerance else OK
-        if bad:
-            cols = BY_NAME[rule.table].column_names
-            base.examples = run(f"SELECT {', '.join(cols)} FROM {table} WHERE _fecha_carga = :fecha AND ({cond}) "
-                                "LIMIT 5", binds)
         base.message = (f"{bad:,} de {total_rows:,} registros incumplen ({pct:.2f}%)".replace(",", ".")
                         if bad else "Todos los registros cumplen")
         return base
