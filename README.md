@@ -2,7 +2,7 @@
 
 **Monitor continuo de calidad y disponibilidad para tablas corporativas, con reglas configurables, detección estadística de anomalías, incidentes y escalamiento asistido por IA.**
 
-[![ci](https://github.com/<tu-usuario>/atlas-one/actions/workflows/ci.yml/badge.svg)](https://github.com/<tu-usuario>/atlas-one/actions/workflows/ci.yml)
+[![ci](https://github.com/diegosaaval/atlas-one/actions/workflows/ci.yml/badge.svg)](https://github.com/diegosaaval/atlas-one/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![tests](https://img.shields.io/badge/tests-63%20pasando-brightgreen)
 ![coverage](https://img.shields.io/badge/cobertura-95%25-brightgreen)

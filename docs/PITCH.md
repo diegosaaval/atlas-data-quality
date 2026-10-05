@@ -80,7 +80,7 @@ Hay empresas enteras dedicadas solo a esto (Monte Carlo, Soda, Great Expectation
 
 ## Siguiente paso recomendado
 
-1. Sube el repo a GitHub (público), cambia `<tu-usuario>` en el README y en `ATLAS_GITHUB_URL`.
+1. Sube el repo a GitHub (público), cambia `diegosaaval` en el README y en `ATLAS_GITHUB_URL`.
 2. Graba un video de 60 segundos con el botón **▶ Demo** y ponlo arriba del README.
 3. Despliégalo gratis (Render, Fly.io o Railway con el Dockerfile) y pon el link en tu CV y en LinkedIn.
 4. Próxima mejora con impacto: un conector a una base real (PostgreSQL o SQL Server) para validar tablas propias.

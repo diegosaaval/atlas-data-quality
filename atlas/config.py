@@ -22,7 +22,7 @@ class Settings:
     random_anomalies: bool = field(default_factory=lambda: _env_bool("ATLAS_RANDOM_ANOMALIES", True))
     start_date: date = field(default_factory=date.today)
     copilot_model: str = field(default_factory=lambda: os.getenv("ATLAS_COPILOT_MODEL", "claude-opus-5-5"))
-    github_url: str = field(default_factory=lambda: os.getenv("ATLAS_GITHUB_URL", "https://github.com/"))
+    github_url: str = field(default_factory=lambda: os.getenv("ATLAS_GITHUB_URL", "https://github.com/diegosaaval/atlas-one"))
 
 
 def get_settings() -> Settings:
