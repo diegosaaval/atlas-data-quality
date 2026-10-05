@@ -451,7 +451,7 @@ class Engine:
             day = date.fromisoformat(latest)
             total = self.store.scalar(f"SELECT COUNT(*) FROM t_{rule.table} WHERE _fecha_carga = ?", (latest,))
             if rule.type == "outlier":  # needs history: report today's value, evaluation starts with the next load
-                value = self.store.scalar(rule.sql(), {"fecha": latest}) or 0
+                value = self.store.scalar(rule.query()[0], {"fecha": latest}) or 0
                 result = CheckResult(rule.table, "preview", rule.describe(), "regla", rule.severity, OK,
                                      f"Valor del {latest}: {value:,.2f}. Se comparará contra su histórico desde "
                                      "la próxima carga.", value=value, total_rows=total, sql=rule.sql())

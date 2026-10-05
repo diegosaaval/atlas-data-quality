@@ -6,7 +6,6 @@ Local:  uvicorn atlas.api:app --reload
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import time
@@ -73,8 +72,7 @@ async def lifespan(_: FastAPI):
     yield
     if task:
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        await asyncio.gather(task, return_exceptions=True)  # wait for a clean shutdown
 
 
 app = FastAPI(title="ATLAS · Monitor de calidad de datos", version=__version__, lifespan=lifespan,

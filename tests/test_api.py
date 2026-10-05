@@ -40,7 +40,8 @@ def test_rules_crud_and_preview(client):
     rid = created.json()["id"]
     assert client.patch(f"/api/rules/{rid}", json={"enabled": False}).json()["enabled"] is False
     assert any(r["id"] == rid for r in client.get("/api/rules").json()["rules"])
-    assert client.delete(f"/api/rules/{rid}").json() == {"deleted": True}
+    deleted = client.delete(f"/api/rules/{rid}")
+    assert deleted.json() == {"deleted": True}
 
 
 def test_invalid_rule_returns_422_with_spanish_message(client):
@@ -91,7 +92,8 @@ def public(client, monkeypatch):
 def test_public_demo_protects_base_rules_and_reset(public):
     assert public.get("/api/meta").json()["public_demo"] is True
     base = next(r["id"] for r in public.get("/api/rules").json()["rules"] if r["author"] == "sistema")
-    assert public.delete(f"/api/rules/{base}").status_code == 403
+    blocked = public.delete(f"/api/rules/{base}")
+    assert blocked.status_code == 403
     assert public.patch(f"/api/rules/{base}", json={"enabled": False}).status_code == 403
     assert public.post("/api/control", json={"reset": True}).status_code == 403
     assert public.post("/api/control", json={"speed": 10}).json()["speed"] == 4
@@ -103,7 +105,8 @@ def test_public_demo_lets_visitors_manage_their_own_rules_with_a_cap(public):
     assert public.post("/api/rules", json=body).status_code == 201
     assert public.post("/api/rules", json=body).status_code == 429
     assert public.patch(f"/api/rules/{first}", json={"enabled": False}).status_code == 200
-    assert public.delete(f"/api/rules/{first}").status_code == 200
+    own = public.delete(f"/api/rules/{first}")
+    assert own.status_code == 200
 
 
 def test_security_headers(client):

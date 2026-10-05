@@ -187,41 +187,67 @@ class Rule:
             p["condition"] = cond
 
     # ------------------------------------------------------------- SQL logic
-    def bad_rows_condition(self) -> str | None:
+    # Identifiers (table, columns, operator, aggregate) are always taken from the fixed schema and
+    # whitelists, never from the incoming text; literal values travel as bound parameters.
+    def _table(self) -> str:
+        return "t_" + next(t.name for t in BY_NAME.values() if t.name == self.table)
+
+    def _col(self, name: str | None) -> str:
+        for c in BY_NAME[self.table].columns:
+            if c.name == name:
+                return c.name
+        raise ValueError(f"La columna '{name}' no existe en {self.table}")
+
+    def bad_rows_condition(self) -> tuple[str, dict[str, Any]] | None:
+        """SQL condition selecting the *bad* rows, plus its bound parameters."""
         p = self.params
-        col = p.get("column")
-        if self.type == "no_nulos":
-            return f"{col} IS NULL OR TRIM(CAST({col} AS TEXT)) = ''"
-        if self.type == "rango":
-            parts = []
-            if p.get("min") is not None:
-                parts.append(f"{col} < {p['min']}")
-            if p.get("max") is not None:
-                parts.append(f"{col} > {p['max']}")
-            return f"{col} IS NOT NULL AND ({' OR '.join(parts)})"
-        if self.type == "valores_permitidos":
-            values = ", ".join("'" + str(v).replace("'", "''") + "'" for v in p["values"])
-            return f"{col} IS NOT NULL AND {col} NOT IN ({values})"
-        if self.type == "comparacion":
-            other = p["other_column"]
-            return f"{col} IS NOT NULL AND {other} IS NOT NULL AND NOT ({col} {p['operator']} {other})"
-        if self.type == "fecha_del_dia":
-            return f"{col} IS NULL OR {col} <> :fecha"
         if self.type == "sql":
-            return f"({p['condition']})"
+            return f"({p['condition']})", {}  # user SQL by design: runs read-only and time-boxed
+        col = self._col(p.get("column"))
+        if self.type == "no_nulos":
+            return f"{col} IS NULL OR TRIM(CAST({col} AS TEXT)) = ''", {}
+        if self.type == "rango":
+            parts, binds = [], {}
+            if p.get("min") is not None:
+                parts.append(f"{col} < :minimo")
+                binds["minimo"] = float(p["min"])
+            if p.get("max") is not None:
+                parts.append(f"{col} > :maximo")
+                binds["maximo"] = float(p["max"])
+            return f"{col} IS NOT NULL AND ({' OR '.join(parts)})", binds
+        if self.type == "valores_permitidos":
+            binds = {f"v{i}": str(v) for i, v in enumerate(p["values"])}
+            return f"{col} IS NOT NULL AND {col} NOT IN ({', '.join(':' + k for k in binds)})", binds
+        if self.type == "comparacion":
+            other = self._col(p["other_column"])
+            op = next(o for o in OPERATORS if o == p["operator"])
+            return f"{col} IS NOT NULL AND {other} IS NOT NULL AND NOT ({col} {op} {other})", {}
+        if self.type == "fecha_del_dia":
+            return f"{col} IS NULL OR {col} <> :fecha", {}
         return None
 
-    def sql(self) -> str:
-        table = f"t_{self.table}"
+    def query(self) -> tuple[str, dict[str, Any]]:
+        """Executable SQL for this rule (bad rows, duplicate groups or the daily aggregate)."""
+        table = self._table()
         if self.type == "unico":
-            cols = ", ".join(self.params["columns"])
+            cols = ", ".join(self._col(c) for c in self.params["columns"])
             return (f"SELECT {cols}, COUNT(*) AS veces FROM {table}\nWHERE _fecha_carga = :fecha\n"
-                    f"GROUP BY {cols} HAVING COUNT(*) > 1")
+                    f"GROUP BY {cols} HAVING COUNT(*) > 1"), {}
         if self.type == "outlier":
-            agg = AGGREGATES[self.params["aggregate"]]
-            target = "*" if agg == "COUNT" else self.params["column"]
-            return f"SELECT {agg}({target}) FROM {table}\nWHERE _fecha_carga = :fecha"
-        return f"SELECT * FROM {table}\nWHERE _fecha_carga = :fecha\n  AND ({self.bad_rows_condition()})"
+            agg = AGGREGATES[next(a for a in AGGREGATES if a == self.params["aggregate"])]
+            target = "*" if agg == "COUNT" else self._col(self.params["column"])
+            return f"SELECT {agg}({target}) FROM {table}\nWHERE _fecha_carga = :fecha", {}
+        cond, binds = self.bad_rows_condition()
+        return f"SELECT * FROM {table}\nWHERE _fecha_carga = :fecha\n  AND ({cond})", binds
+
+    def sql(self) -> str:
+        """Readable SQL for people: bound values shown inline (never executed)."""
+        text, binds = self.query()
+        for key in sorted(binds, key=len, reverse=True):
+            value = binds[key]
+            literal = f"{value:g}" if isinstance(value, float) else "'" + str(value).replace("'", "''") + "'"
+            text = text.replace(f":{key}", literal)
+        return text
 
 
 def _n(v: float | None) -> str:
@@ -242,7 +268,8 @@ def evaluate(rule: Rule, store: Store, day: date, total_rows: int) -> CheckResul
         if rule.type == "outlier":
             return _evaluate_outlier(rule, store, day, base)
         if rule.type == "unico":
-            groups = store.query(rule.sql() + " ORDER BY veces DESC", {"fecha": iso})
+            q, _ = rule.query()
+            groups = store.query(q + " ORDER BY veces DESC", {"fecha": iso})
             extra = sum(g["veces"] - 1 for g in groups)
             base.failing_rows = extra
             base.examples = groups[:5]
@@ -253,10 +280,11 @@ def evaluate(rule: Rule, store: Store, day: date, total_rows: int) -> CheckResul
                             f"{' + '.join(rule.params['columns'])}" if extra else "Sin duplicados").replace(",", ".")
             return base
 
-        cond = rule.bad_rows_condition()
-        table = f"t_{rule.table}"
+        cond, binds = rule.bad_rows_condition()
+        binds = {"fecha": iso, **binds}
+        table = rule._table()
         run = store.query_readonly if rule.type == "sql" else store.query
-        bad = run(f"SELECT COUNT(*) AS n FROM {table} WHERE _fecha_carga = :fecha AND ({cond})", {"fecha": iso})[0]["n"]
+        bad = run(f"SELECT COUNT(*) AS n FROM {table} WHERE _fecha_carga = :fecha AND ({cond})", binds)[0]["n"]
         base.failing_rows = bad
         pct = 100 * bad / total_rows if total_rows else 0.0
         base.value = round(pct, 3)
@@ -266,7 +294,7 @@ def evaluate(rule: Rule, store: Store, day: date, total_rows: int) -> CheckResul
         if bad:
             cols = BY_NAME[rule.table].column_names
             base.examples = run(f"SELECT {', '.join(cols)} FROM {table} WHERE _fecha_carga = :fecha AND ({cond}) "
-                                "LIMIT 5", {"fecha": iso})
+                                "LIMIT 5", binds)
         base.message = (f"{bad:,} de {total_rows:,} registros incumplen ({pct:.2f}%)".replace(",", ".")
                         if bad else "Todos los registros cumplen")
         return base
@@ -299,7 +327,8 @@ def baseline(history: list[tuple[str, float]], day: date, same_weekday: bool,
 def _evaluate_outlier(rule: Rule, store: Store, day: date, base: CheckResult) -> CheckResult:
     iso = day.isoformat()
     p = rule.params
-    value = store.scalar(rule.sql(), {"fecha": iso})
+    q, _ = rule.query()
+    value = store.scalar(q, {"fecha": iso})
     value = float(value or 0)
     key = f"rule:{rule.id}"
     stats = baseline(store.metric_history(rule.table, key + ":base", iso, 60), day, p.get("same_weekday", True))
