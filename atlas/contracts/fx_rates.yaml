@@ -1,0 +1,10 @@
+dataset: bronze.fx_rates
+version: 1.0.0
+owner: treasury
+description: Reference FX quotes from the market data provider.
+primary_key: [pair, as_of]
+freshness_sla_minutes: 15
+columns:
+  pair:  {type: string, required: true, enum: ["USD/COP"]}
+  rate:  {type: number, required: true, min: 1000, max: 10000}
+  as_of: {type: timestamp, required: true}

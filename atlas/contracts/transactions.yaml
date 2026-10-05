@@ -1,0 +1,16 @@
+dataset: bronze.transactions
+version: 2.1.0
+owner: payments-platform
+description: Payment events emitted by the gateway, one row per transaction.
+primary_key: [txn_id]
+freshness_sla_minutes: 15
+columns:
+  txn_id:            {type: string, required: true, pattern: "^TXN-", classification: internal}
+  account_id:        {type: string, required: true, pattern: "^ACC-", classification: confidential}
+  merchant_id:       {type: string, required: true, classification: internal}
+  merchant_category: {type: string, required: true, enum: [grocery, fuel, travel, electronics, transfer, utilities, restaurants]}
+  channel:           {type: string, required: true, enum: [app, pse, card_present, card_not_present]}
+  amount:            {type: number, required: true, min: 0, max: 500000000, classification: confidential}
+  currency:          {type: string, required: true, enum: [COP, USD]}
+  event_time:        {type: timestamp, required: true}
+  status:            {type: string, required: true, enum: [approved, declined, reversed]}

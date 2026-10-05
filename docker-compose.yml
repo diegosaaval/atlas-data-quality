@@ -1,0 +1,36 @@
+# docker compose up --build                       -> app on http://localhost:8000
+# docker compose --profile observability up       -> + Prometheus on :9090 and Grafana on :3000
+services:
+  atlas:
+    build: .
+    image: atlas-one:latest
+    ports: ["8000:8000"]
+    environment:
+      ATLAS_SEED: ${ATLAS_SEED:-7}
+      ATLAS_TICK_SECONDS: ${ATLAS_TICK_SECONDS:-1.5}
+      ATLAS_GITHUB_URL: ${ATLAS_GITHUB_URL:-https://github.com/}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes: ["atlas-data:/data"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    volumes: ["./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+    depends_on: [atlas]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["observability"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes: ["./deploy/grafana-datasource.yml:/etc/grafana/provisioning/datasources/atlas.yml:ro"]
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  atlas-data:
