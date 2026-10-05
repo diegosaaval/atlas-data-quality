@@ -29,13 +29,13 @@ Hay empresas enteras dedicadas solo a esto (Monte Carlo, Soda, Great Expectation
 | **Medallion: bronze/silver/gold** | Capas de un data lake: datos crudos → limpios → listos para el negocio. ATLAS vigilaría sobre todo silver y gold |
 | **SLA** | Compromiso de hora de entrega de una tabla (ej. "pagos antes de las 7:00") |
 
-## Demo de 2 minutos (o usa el botón ▶ Demo)
+## Demo de 2 minutos (o usa el botón Ver demo)
 
 | Tiempo | Qué muestras | Qué dices |
 |---|---|---|
 | 0:00 | Resumen | "Cada mañana TI carga 6 tablas del banco. ATLAS valida cada una apenas llega." |
 | 0:15 | Línea de tiempo | "Cada tabla tiene una hora acordada. Si no llega, ATLAS lo detecta solo." |
-| 0:25 | ⚡ Carga duplicada + pagos no llega | "Simulo dos problemas que me pasaban en el banco." |
+| 0:25 | Simular anomalía → carga duplicada + pagos no llega | "Simulo dos problemas que me pasaban en el banco." |
 | 0:40 | La cartera se pone roja | "El doble de registros y créditos repetidos: incidente crítico, notificado a Riesgo de Crédito." |
 | 0:55 | Pagos 'No disponible' | "Son las 8:00 y pagos no llegó: otro incidente, con Recaudo como responsable." |
 | 1:10 | Incidentes → correo | "Un incidente por tabla, con evidencia y ejemplos. El correo de escalamiento se redacta con un clic." |
@@ -50,14 +50,14 @@ Hay empresas enteras dedicadas solo a esto (Monte Carlo, Soda, Great Expectation
   - Diseñé un monitor que valida 6 tablas diarias apenas llegan: disponibilidad frente al horario acordado, volumen frente al mismo día de la semana y estructura.
   - Implementé 8 tipos de reglas de calidad que se traducen a SQL (duplicados, nulos, rangos, valores permitidos, comparaciones, fecha del día, outliers por desviación estándar y SQL personalizado), creadas desde una interfaz web sin programar.
   - Construí la gestión de incidentes: un caso por tabla con evidencia, registros de ejemplo, impacto, recurrencia y cierre automático; el correo de escalamiento lo redacta la IA (Claude) o una plantilla.
-  - Calibré la detección con líneas base robustas (mediana y desviación por día de la semana): menos de 1,5% de falsos positivos en 720 cargas simuladas, y detección del 100% de 13 tipos de anomalía, verificado con 63 tests automáticos.
+  - Calibré la detección con líneas base robustas (mediana y desviación por día de la semana): menos de 1,5% de falsos positivos en 720 cargas simuladas, y detección del 100% de 13 tipos de anomalía, verificado con 69 tests automáticos.
 
 **English**
 - **ATLAS: data-quality monitor for daily banking tables** (Python, SQL, FastAPI, Docker, GitHub Actions)
   - Built a monitor that validates 6 daily tables on arrival: SLA-based availability, weekday-aware volume anomalies and schema checks.
   - Implemented 8 rule types compiled to SQL (uniqueness, nulls, ranges, accepted values, cross-column, freshness, standard-deviation outliers, custom SQL), managed from a web UI without code.
   - Designed incident management: one case per table with evidence, sample records, impact, recurrence and auto-resolution; escalation emails drafted by AI (Claude) or templates.
-  - Tuned detection with robust weekday baselines: <1.5% false positives over 720 simulated loads and 13/13 anomaly types detected, enforced by 63 automated tests.
+  - Tuned detection with robust weekday baselines: <1.5% false positives over 720 simulated loads and 13/13 anomaly types detected, enforced by 69 automated tests.
 
 > Pon este proyecto **justo debajo de tu experiencia en el banco**. Lo fuerte del CV es la combinación: *"lo hice en producción con datos reales"* + *"aquí está la versión mejorada, pública y probada"*. No infles cifras del banco; las del proyecto son verificables en el repo.
 
@@ -81,6 +81,6 @@ Hay empresas enteras dedicadas solo a esto (Monte Carlo, Soda, Great Expectation
 ## Siguiente paso recomendado
 
 1. Sube el repo a GitHub (público), cambia `diegosaaval` en el README y en `ATLAS_GITHUB_URL`.
-2. Graba un video de 60 segundos con el botón **▶ Demo** y ponlo arriba del README.
+2. Graba un video de 60 segundos con el botón **Ver demo** y ponlo arriba del README.
 3. Despliégalo gratis (Render, Fly.io o Railway con el Dockerfile) y pon el link en tu CV y en LinkedIn.
 4. Próxima mejora con impacto: un conector a una base real (PostgreSQL o SQL Server) para validar tablas propias.

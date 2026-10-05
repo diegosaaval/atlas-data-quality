@@ -2,17 +2,23 @@
 
 **Monitor continuo de calidad y disponibilidad para tablas corporativas, con reglas configurables, detección estadística de anomalías, incidentes y escalamiento asistido por IA.**
 
-[![ci](https://github.com/diegosaaval/atlas-one/actions/workflows/ci.yml/badge.svg)](https://github.com/diegosaaval/atlas-one/actions/workflows/ci.yml)
+[![ci](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests](https://img.shields.io/badge/tests-63%20pasando-brightgreen)
+![tests](https://img.shields.io/badge/tests-69%20pasando-brightgreen)
 ![coverage](https://img.shields.io/badge/cobertura-95%25-brightgreen)
 ![license](https://img.shields.io/badge/licencia-MIT-lightgrey)
 
 ![Resumen del día en ATLAS](docs/img/resumen.png)
 
+<details><summary>Ver en modo oscuro</summary>
+
+![Resumen en modo oscuro](docs/img/resumen-oscuro.png)
+
+</details>
+
 > 🇬🇧 *ATLAS monitors the tables other teams load every day: SLA-based availability, weekday-aware volume anomalies, schema checks, business rules compiled to SQL, standard-deviation outliers, and one incident per table with evidence and an AI-drafted escalation email. Deterministic checks decide; AI only explains.*
 
-**Demo en vivo:** _(pendiente de despliegue)_ · **Video de 90 s:** _(pendiente)_ · **Documentación de la API:** `/docs`
+🟢 **Demo en vivo:** _(pendiente de despliegue)_ · ▶️ **Video de 90 s:** _(pendiente)_ · 📄 **[Decisiones de diseño](docs/DISENO.md)**
 
 ---
 
@@ -28,7 +34,7 @@ ATLAS **no construye ni administra el pipeline de origen**. Observa los datos qu
 4. **¿Se comporta como siempre?**
 5. **Si no, ¿quién lo arregla y con qué evidencia?**
 
-> Inspirado en mi trabajo en banca, donde validaba a diario las cargas de TI (duplicados, nulos, desviaciones, reglas como *tasa de mora ≥ 0*) para escalar incidentes a tiempo.
+> **Proyecto personal.** No es un sistema de la entidad donde trabajé ni lo encargó esa organización. Lo diseñé y desarrollé por mi cuenta, a partir de lo que hacía a diario en banca: validar las cargas de TI (duplicados, nulos, desviaciones, reglas como *tasa de mora ≥ 0*) para escalar incidentes a tiempo. Todos los datos son sintéticos.
 
 ## Arquitectura
 
@@ -105,7 +111,7 @@ El copiloto redacta el correo de escalamiento con causa probable, impacto y acci
 
 ## Escenarios de la demo
 
-Desde **⚡ Simular anomalía** (o en la **▶ Demo** guiada de 2 minutos) se puede provocar cualquiera de estos 13 problemas reales. Todos se detectan y un test lo verifica:
+Desde **Simular anomalía** (o en la demo guiada de 2 minutos, botón **Ver demo**) se puede provocar cualquiera de estos 13 problemas reales. Todos se detectan y un test lo verifica:
 
 | Escenario | Tabla | Lo detecta |
 |---|---|---|
@@ -140,21 +146,28 @@ Un banco sintético (determinístico por semilla) carga cada mañana 6 tablas co
 
 ## Stack
 
-Python 3.11+ · FastAPI · SQLite · SQL · WebSocket · HTML/CSS/JavaScript nativo (sin build, gráficos SVG propios) · pytest · ruff · Docker · GitHub Actions · Claude API (opcional)
+Python 3.11+ · FastAPI · SQLite · SQL · WebSocket · HTML/CSS/JavaScript nativo (sin build, gráficos SVG propios, diseño inspirado en las guías de Apple, modo claro y oscuro) · pytest · ruff · Docker · GitHub Actions · Render · Claude API (opcional)
 
 ## Cómo correrlo
 
-**Con un clic** (solo necesita Python 3.11+; el lanzador ofrece instalarlo si falta):
+### Sin comandos (doble clic)
 
-| Sistema | Qué hacer |
-|---|---|
-| Windows | doble clic en **`start.bat`** |
-| macOS | doble clic en **`start.command`** (la primera vez: clic derecho → Abrir) |
-| Linux | `./start.sh` |
+| Windows | Mac | Linux |
+|---|---|---|
+| **`Iniciar ATLAS.bat`** | **`Iniciar ATLAS.command`** | `./start.sh` |
 
-Crea el entorno virtual, instala dependencias (solo la primera vez), busca un puerto libre y abre el navegador. Opciones: `--test` corre los tests y `--reinstall` reconstruye el entorno.
+La primera vez el lanzador:
 
-**Con Docker:**
+1. busca Python 3.11 o más reciente y, si no está, lo instala (Windows con `winget`, Mac con Homebrew) o abre la página de descarga;
+2. prepara el entorno e instala los componentes (necesita internet, cerca de 1 minuto);
+3. crea un **acceso directo «ATLAS» con su ícono en el escritorio**;
+4. abre el navegador y muestra en la ventana la dirección para **abrirlo desde el celular** (misma red Wi-Fi).
+
+Las veces siguientes arranca en segundos. Si ATLAS ya está abierto, solo abre el navegador. Opciones: `--test` corre las pruebas, `--reinstall` rehace el entorno y `--sin-acceso` no crea el acceso directo.
+
+> En Mac, la primera vez que abras un archivo descargado de internet: clic derecho → **Abrir** → **Abrir**.
+
+### Con Docker
 
 ```bash
 docker compose up --build
@@ -162,7 +175,7 @@ docker compose up --build
 
 Luego abre <http://localhost:8000>.
 
-**Manual:**
+### Con comandos
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -170,7 +183,25 @@ pip install -e ".[dev,ai]"
 uvicorn atlas.api:app --reload
 ```
 
-La configuración va por variables de entorno; ver [`.env.example`](.env.example).
+### Demo pública en internet
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/diegosaaval/atlas-data-quality)
+
+El botón publica una copia propia y gratuita en [Render](https://render.com) usando [`render.yaml`](render.yaml). En modo demo pública las reglas base quedan protegidas, cada visitante puede crear reglas propias y nadie puede reiniciarla ni dejarla en pausa. En el plan gratuito la demo se duerme tras 15 minutos sin visitas: la primera visita tarda cerca de un minuto en despertarla, y arranca de nuevo con 70 días de historia.
+
+### Configuración
+
+| Variable | Para qué | Por defecto |
+|---|---|---|
+| `ATLAS_TICK_SECONDS` | Segundos reales por cada 15 minutos simulados | `1.0` |
+| `ATLAS_RANDOM_ANOMALIES` | Aparecen anomalías aleatorias de vez en cuando | `1` |
+| `ATLAS_PUBLIC_DEMO` | Protege la demo cuando es pública | `0` |
+| `ATLAS_RULES_PATH` | Archivo donde se guardan las reglas | `data/reglas.json` |
+| `ATLAS_SEED` | Semilla del banco sintético | `7` |
+| `ANTHROPIC_API_KEY` | Si se define, Claude redacta los correos; si no, plantillas | sin definir |
+| `PORT` | Puerto (lo usan Render, Railway y Fly) | `8000` |
+
+Ver [`.env.example`](.env.example).
 
 ## Tests y calidad del código
 
@@ -178,8 +209,8 @@ La configuración va por variables de entorno; ver [`.env.example`](.env.example
 pytest --cov=atlas
 ```
 
-- **63 tests**, **95% de cobertura**, lint con **ruff**.
-- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback y la API completa (REST y WebSocket).
+- **69 tests**, **95% de cobertura**, lint con **ruff**.
+- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública y el lanzador (incluido el acceso directo de Mac).
 - El CI de GitHub Actions corre lint y tests en Python 3.11, 3.12 y 3.13, construye la imagen Docker y hace una prueba de humo del contenedor.
 
 ## API
@@ -208,8 +239,9 @@ atlas/
   copilot.py    correo de escalamiento (plantilla o Claude)
   api.py        FastAPI: REST + WebSocket + métricas
 web/            interfaz en vivo
-tests/          63 tests
-docs/           capturas y guía de entrevista
+tests/          69 tests
+docs/           capturas, decisiones de diseño y guía de entrevista
+run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 ```
 
 ## Hoja de ruta
@@ -221,6 +253,12 @@ docs/           capturas y guía de entrevista
 - [ ] Monitorear las tablas gold de **FINFLOW**, mi pipeline financiero en AWS
 
 ATLAS seguirá siendo un **monitor**, no un ETL.
+
+## Autor
+
+**Diego S** · [GitHub](https://github.com/diegosaaval)
+
+Análisis del problema, diseño de la solución y desarrollo.
 
 ## Licencia
 

@@ -101,3 +101,9 @@ class Store:
         with self.lock:
             for spec in TABLES:
                 self.conn.execute(f"DELETE FROM t_{spec.name} WHERE _fecha_carga < ?", (keep_from,))
+
+    def prune_history(self, keep_from: str) -> None:
+        """Metrics and check results older than `keep_from` are dropped (keeps the demo bounded)."""
+        with self.lock:
+            self.conn.execute("DELETE FROM metrics WHERE fecha < ?", (keep_from,))
+            self.conn.execute("DELETE FROM check_results WHERE fecha < ?", (keep_from,))

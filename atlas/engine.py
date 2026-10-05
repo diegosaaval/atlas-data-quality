@@ -198,6 +198,13 @@ class Engine:
         if scores:
             self.store.put_metric(iso, "_global", "score", statistics.fmean(scores))
         self.store.prune_rows((self.today - timedelta(days=7)).isoformat())
+        # Long-running public demo: forget incidents resolved more than 120 days ago.
+        horizon = (self.today - timedelta(days=120)).isoformat()
+        if self.today.day == 1:
+            self.store.prune_history(horizon)
+        for key in [k for k, i in self.incidents.items() if i.resolved and i.resolved[0] < horizon]:
+            del self.incidents[key]
+            self.copilot_cache.pop(key, None)
 
     @staticmethod
     def _score(results: list[CheckResult]) -> float:

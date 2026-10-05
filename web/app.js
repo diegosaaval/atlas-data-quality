@@ -51,10 +51,12 @@ function onSnapshot(s) {
   if (!prev || prev.time !== s.time || prev.date !== s.date) tickHooks.forEach((f) => f(s));
 }
 
+const ICON_PAUSE = `<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="3" y="2" width="3" height="10" rx="1" fill="currentColor"/><rect x="8" y="2" width="3" height="10" rx="1" fill="currentColor"/></svg>`;
+const ICON_PLAY = `<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M4 2.2v9.6a.8.8 0 0 0 1.2.7l7.6-4.8a.8.8 0 0 0 0-1.4L5.2 1.5A.8.8 0 0 0 4 2.2z" fill="currentColor"/></svg>`;
 function renderHeader(s) {
   $("#clock").className = "clock " + (s.running ? "on" : "paused");
   $("#clock span").textContent = `${s.weekday.slice(0, 3)} ${s.date.slice(5)} · ${s.time}`;
-  $("#btn-play").textContent = s.running ? "❚❚" : "▶";
+  setHTML($("#btn-play"), s.running ? ICON_PAUSE : ICON_PLAY);
   $("#speed").value = String(s.speed);
   const b = $("#inc-badge"); b.hidden = !s.kpis.open_incidents; b.textContent = s.kpis.open_incidents;
 }
@@ -103,7 +105,7 @@ function renderResumen(s) {
     kpi("Incidentes abiertos", k.open_incidents, "agrupados por tabla", k.open_incidents > 0),
     kpi("Controles fallidos hoy", `${k.checks_failed}/${k.checks_today}`, "monitores + reglas", k.checks_failed > 0),
     kpi("Registros validados hoy", nf(k.rows_today), "en todas las tablas"),
-    kpi("Tiempo medio de resolución", k.mttr_hours == null ? "—" : `${nf(k.mttr_hours, 1)} h`, "desde la detección"),
+    kpi("Tiempo de resolución", k.mttr_hours == null ? "—" : `${nf(k.mttr_hours, 1)} h`, "promedio, desde la detección"),
   ].join(""));
 
   setHTML($("#table-cards"), s.tables.map((t) => {
@@ -139,12 +141,12 @@ function timeline(s) {
   s.tables.forEach((t, i) => {
     const ex = x(toMin(t.expected_at));
     const up = i % 2 === 0;
-    const color = { ok: "var(--good)", advertencia: "var(--warning)", falla: "var(--critical)", no_disponible: "var(--critical)", retrasada: "var(--warning)" }[t.status] || "var(--surface)";
+    const color = { ok: "var(--good)", advertencia: "var(--warning)", falla: "var(--critical)", no_disponible: "var(--critical)", retrasada: "var(--warning)" }[t.status] || "var(--text-3)";
     const stroke = t.status === "esperando" ? "var(--text-3)" : color;
     const ly = up ? 22 : 86;
     out += `<g class="marker" data-table="${esc(t.name)}" data-tip="${esc(t.title)} · esperada ${t.expected_at}${t.arrived_at ? ` · llegó ${t.arrived_at}` : ""} · ${esc(t.status_label)}">
       <line x1="${ex}" x2="${ex}" y1="${up ? 28 : 54}" y2="${up ? 42 : 72}" stroke="var(--border)"/>
-      <circle cx="${ex}" cy="48" r="7" fill="${color}" stroke="${stroke}" stroke-width="2" ${t.status === "esperando" ? 'stroke-dasharray="2 2"' : ""}/>
+      <circle cx="${ex}" cy="48" r="8" fill="${color}" opacity="${t.status === "esperando" ? 0.35 : 1}" stroke="${stroke}" stroke-width="2" ${t.status === "esperando" ? 'stroke-dasharray="2 2"' : ""}/>
       ${t.arrived_at && t.arrived_at !== t.expected_at ? `<path d="M${x(toMin(t.arrived_at))} 41 l4 4 -4 4 -4 -4z" fill="${color}" opacity=".7"/>` : ""}
       <text class="lbl ${t.status === "falla" || t.status === "no_disponible" ? "strong" : ""}" x="${ex}" y="${ly}" text-anchor="middle">${esc(t.name)}</text></g>`;
   });
@@ -324,7 +326,7 @@ async function renderIncidentes(s, force) {
       <div class="top">${sev(i.severity, i.severity_label)} ${st(...INC_ST[i.status])} ${i.simulated ? '<span class="pill">simulado</span>' : ""}</div>
       <div class="title"><b>${esc(i.table)}</b> · ${esc(i.title)}</div>
       <div class="sub">${esc(i.id)} · ${esc(i.opened_date)} ${esc(i.opened_time)} · ${dur(i.minutes_open)}${i.failing_checks > 1 ? ` · ${i.failing_checks} controles` : ""}</div>
-    </li>`).join("") : `<li class="empty">${state.incFilter === "activos" ? "No hay incidentes activos. 🎉" : "Sin incidentes."}</li>`);
+    </li>`).join("") : `<li class="empty">${state.incFilter === "activos" ? "No hay incidentes activos. Todo en orden." : "Sin incidentes."}</li>`);
   if (!state.incSel) { setHTML($("#inc-detail"), `<p class="muted">Selecciona un incidente.</p>`); return; }
   const sum = s.incidents.find((i) => i.id === state.incSel);
   const key = `${sum.id}|${sum.status}|${sum.loads_failed}|${sum.failing_checks}|${sum.status === "resuelto" ? "" : s.time}`;
@@ -424,6 +426,8 @@ async function draftEmail(id) {
 }
 
 // ---------------------------------------------------------------------- REGLAS
+// En la demo pública las reglas base quedan protegidas: solo se editan las que crea cada visitante.
+const locked = (r) => state.meta?.public_demo && r.author !== "usuario";
 async function loadRules() { state.rules = await api("/api/rules"); }
 
 async function renderReglas(s, force) {
@@ -441,11 +445,11 @@ async function renderReglas(s, force) {
   const rows = R.rules.filter((r) => !filter.value || r.table === filter.value);
   setHTML($("#rules-table"), `<thead><tr><th>Activa</th><th>Tabla</th><th>Regla</th><th>Tipo</th><th>Severidad</th><th></th></tr></thead><tbody>
     ${rows.map((r) => `<tr>
-      <td><label class="switch"><input type="checkbox" data-toggle="${esc(r.id)}" ${r.enabled ? "checked" : ""}><span></span></label></td>
+      <td><label class="switch"><input type="checkbox" data-toggle="${esc(r.id)}" ${r.enabled ? "checked" : ""} ${locked(r) ? "disabled" : ""}><span></span></label></td>
       <td class="mono small">${esc(r.table)}</td>
       <td>${esc(r.description)}${r.author === "usuario" ? '<span class="tag-user">tuya</span>' : ""}${r.note ? `<br><span class="small muted">${esc(r.note)}</span>` : ""}</td>
       <td class="small muted">${esc(r.type_label)}</td><td>${sev(r.severity, r.severity_label)}</td>
-      <td><button class="btn small ghost" data-del="${esc(r.id)}" title="Eliminar regla">✕</button></td></tr>`).join("")}</tbody>`);
+      <td><button class="icon-btn" data-del="${esc(r.id)}" ${locked(r) ? "hidden" : ""} title="Eliminar regla" aria-label="Eliminar regla"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></td></tr>`).join("")}</tbody>`);
 }
 
 const numericCols = (t) => state.rules.tables[t].filter((c) => ["entero", "decimal"].includes(c.type));
@@ -589,14 +593,18 @@ async function runTour() {
     await say("En la ficha de cada tabla: el <b>volumen diario con su banda de normalidad</b> (el punto rojo es la anomalía), el historial de 30 días y el perfil de columnas.", "tablas", 9000);
     await say("Las <b>reglas de negocio</b> se crean sin programar, por ejemplo <i>tasa_mora entre 0 y 100</i>. Cada regla se convierte en SQL y se puede probar antes de guardarla.", "reglas", 8000);
     await control({ running: true, speed: 1, random_anomalies: true });
-    await say("Cuando la próxima carga llegue bien, <b>los incidentes se cierran solos</b> y queda medido el tiempo de resolución. ¡Ahora explora tú! (⚡ Simular anomalía)", "resumen", 8000);
+    await say("Cuando la próxima carga llegue bien, <b>los incidentes se cierran solos</b> y queda medido el tiempo de resolución. ¡Ahora explora tú! (botón «Simular anomalía»)", "resumen", 8000);
     stopTour();
   } catch { if (token === tourToken) stopTour(); }
   finally { if (state.snap && !state.snap.running) control({ running: true, speed: 1 }); }
 }
 
 // ---------------------------------------------------------------------- inicio
-api("/api/meta").then((m) => ($("#gh-link").href = m.github_url)).catch(() => {});
+api("/api/meta").then((m) => {
+  state.meta = m;
+  $("#gh-link").href = m.github_url;
+  if (m.public_demo) toast("Demo pública: lo que hagas lo ven también otros visitantes.", 6000);
+}).catch(() => {});
 // La vista inicial sale del enlace (/#incidentes) o de la última visitada.
 const [hashView, hashArg] = location.hash.slice(1).split("/");
 if (hashArg && hashView === "tablas") state.table = hashArg;

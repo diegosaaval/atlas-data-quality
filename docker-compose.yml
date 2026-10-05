@@ -9,7 +9,7 @@ services:
       ATLAS_SEED: ${ATLAS_SEED:-7}
       ATLAS_TICK_SECONDS: ${ATLAS_TICK_SECONDS:-1.0}
       ATLAS_RANDOM_ANOMALIES: ${ATLAS_RANDOM_ANOMALIES:-1}
-      ATLAS_GITHUB_URL: ${ATLAS_GITHUB_URL:-https://github.com/diegosaaval/atlas-one}
+      ATLAS_GITHUB_URL: ${ATLAS_GITHUB_URL:-https://github.com/diegosaaval/atlas-data-quality}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes: ["atlas-data:/data"]
     restart: unless-stopped
