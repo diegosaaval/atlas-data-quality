@@ -35,10 +35,10 @@ jobs:
         run: docker build -t atlas-one:ci .
       - name: Smoke test container
         run: |
-          docker run -d --name atlas -p 8000:8000 atlas-one:ci
+          docker run -d --name atlas -p 8000:8000 -e ATLAS_RANDOM_ANOMALIES=0 atlas-one:ci
           for i in $(seq 1 30); do curl -fs localhost:8000/readyz && break; sleep 1; done
-          curl -fs localhost:8000/api/state | python -c "import json,sys; s=json.load(sys.stdin); assert s['platform']['score'] > 90"
-          curl -fs -X POST localhost:8000/api/faults/schema_drift -H 'Content-Type: application/json' -d '{}'
-          sleep 4
-          curl -fs "localhost:8000/api/incidents?status=open" | python -c "import json,sys; assert json.load(sys.stdin)"
+          curl -fs -X POST localhost:8000/api/control -H 'Content-Type: application/json' -d '{"next_day": true, "running": false}'
+          curl -fs -X POST localhost:8000/api/scenarios/carga_duplicada
+          curl -fs -X POST localhost:8000/api/control -H 'Content-Type: application/json' -d '{"finish_day": true}'
+          curl -fs localhost:8000/api/state | python -c "import json,sys; s=json.load(sys.stdin); assert s['kpis']['tables_arrived'] == 6; assert s['kpis']['open_incidents'] >= 1"
           docker logs atlas | tail -20

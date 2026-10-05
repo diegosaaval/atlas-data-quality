@@ -1,6 +1,6 @@
-"""HTTP / WebSocket API and static UI.
+"""API HTTP / WebSocket y la interfaz web.
 
-Run locally:  uvicorn atlas.api:app --reload
+Local:  uvicorn atlas.api:app --reload
 """
 
 from __future__ import annotations
@@ -11,33 +11,30 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, catalog, copilot
+from . import __version__, copilot
 from .config import get_settings
-from .contracts import load_contracts
 from .engine import Engine
-from .faults import FAULTS_BY_ID
-from .warehouse import GOLD_MODELS
+from .rules import AGGREGATES, OPERATORS, RULE_TYPES, SEVERITIES, SEVERITY_LABEL, Rule
+from .tables import BY_NAME, SCENARIOS_BY_ID, TABLES
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
-Role = Literal["viewer", "engineer", "admin"]
-ROLE_RANK = {"viewer": 0, "engineer": 1, "admin": 2}
 
 
 class Hub:
-    """Fan-out of engine snapshots to every connected WebSocket client."""
+    """Envía cada snapshot del motor a todos los navegadores conectados."""
 
     def __init__(self) -> None:
         self.clients: set[WebSocket] = set()
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
-        message = json.dumps({"type": "snapshot", "data": payload}, default=str)
+        message = json.dumps({"type": "snapshot", "data": payload}, default=str, ensure_ascii=False)
         dead = []
         for ws in self.clients:
             try:
@@ -63,11 +60,7 @@ async def run_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    task = None
-    if settings.autostart:
-        for _ in range(36):  # three simulated hours of history so charts are never empty
-            engine.tick()
-        task = asyncio.create_task(run_loop())
+    task = asyncio.create_task(run_loop()) if settings.autostart else None
     yield
     if task:
         task.cancel()
@@ -75,34 +68,8 @@ async def lifespan(_: FastAPI):
             await task
 
 
-app = FastAPI(
-    title="ATLAS ONE",
-    version=__version__,
-    description="Reference implementation of a data reliability platform for financial data.",
-    lifespan=lifespan,
-)
-
-
-# ------------------------------------------------------------------ security
-def current_role(x_atlas_role: Annotated[str | None, Header()] = None) -> Role:
-    role = (x_atlas_role or settings.default_role).lower()
-    if role not in ROLE_RANK:
-        raise HTTPException(400, f"Unknown role '{role}'")
-    return role  # type: ignore[return-value]
-
-
-def require(minimum: Role):
-    def checker(role: Role = Depends(current_role)) -> Role:
-        if ROLE_RANK[role] < ROLE_RANK[minimum]:
-            raise HTTPException(403, f"Role '{role}' cannot perform this action (requires {minimum})")
-        return role
-    return checker
-
-
-def mask(value: str | None, keep: int = 2) -> str | None:
-    if not value:
-        return value
-    return value[:4] + "•" * max(0, len(value) - 4 - keep) + value[-keep:]
+app = FastAPI(title="ATLAS · Monitor de calidad de datos", version=__version__, lifespan=lifespan,
+              description="Valida las tablas que se cargan cada día y gestiona los incidentes de calidad.")
 
 
 async def publish() -> dict[str, Any]:
@@ -111,249 +78,231 @@ async def publish() -> dict[str, Any]:
     return snapshot
 
 
-# ---------------------------------------------------------------------- meta
-@app.get("/healthz", tags=["ops"])
+def _incident_or_404(incident_id: str):
+    inc = engine.incidents.get(incident_id)
+    if not inc:
+        raise HTTPException(404, "Incidente no encontrado")
+    return inc
+
+
+# ----------------------------------------------------------------- general
+@app.get("/healthz", tags=["operación"])
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/readyz", tags=["ops"])
+@app.get("/readyz", tags=["operación"])
 def readyz() -> dict[str, Any]:
-    return {"status": "ready" if engine.tick_no >= 0 else "starting", "tick": engine.tick_no}
+    return {"status": "ready", "date": engine.today.isoformat()}
 
 
-@app.get("/api/meta", tags=["meta"])
-def meta(role: Role = Depends(current_role)) -> dict[str, Any]:
-    return {
-        "version": __version__,
-        "role": role,
-        "github_url": settings.github_url,
-        "copilot_backend": "claude" if os.getenv("ANTHROPIC_API_KEY") else "rules",
-        "tick_minutes": settings.tick_minutes,
-        "tick_seconds": settings.tick_seconds,
-    }
+@app.get("/api/meta", tags=["general"])
+def meta() -> dict[str, Any]:
+    return {"version": __version__, "github_url": settings.github_url,
+            "copilot": "claude" if os.getenv("ANTHROPIC_API_KEY") else "plantilla"}
 
 
-@app.get("/api/state", tags=["observability"])
+@app.get("/api/state", tags=["general"])
 def state() -> dict[str, Any]:
     return engine.snapshot()
 
 
-# ------------------------------------------------------------------ datasets
-@app.get("/api/datasets", tags=["catalog"])
-def datasets() -> list[dict[str, Any]]:
-    return [engine.dataset_dict(d.id) for d in catalog.DATASETS]
+# ------------------------------------------------------------------ tablas
+@app.get("/api/tables", tags=["tablas"])
+def tables() -> list[dict[str, Any]]:
+    return [t.to_dict() for t in TABLES]
 
 
-@app.get("/api/datasets/{dataset_id}", tags=["catalog"])
-def dataset(dataset_id: str) -> dict[str, Any]:
-    if dataset_id not in catalog.BY_ID:
-        raise HTTPException(404, "Unknown dataset")
-    data = engine.dataset_dict(dataset_id)
-    data["history"] = engine.wh.query(
-        """SELECT tick, check_name, status, value FROM check_results
-           WHERE dataset = ? AND tick > ? ORDER BY tick""",
-        (dataset_id, engine.tick_no - 48),
-    )
-    data["downstream"] = [d.id for d in catalog.blast_radius(dataset_id)]
-    data["model_sql"] = " ".join(GOLD_MODELS[dataset_id].split()) if dataset_id in GOLD_MODELS else None
-    return data
+@app.get("/api/tables/{name}", tags=["tablas"])
+def table(name: str) -> dict[str, Any]:
+    if name not in BY_NAME:
+        raise HTTPException(404, "Tabla no encontrada")
+    return engine.table_detail(name)
 
 
-@app.get("/api/lineage", tags=["catalog"])
-def lineage() -> dict[str, Any]:
-    return {"nodes": [engine.dataset_dict(d.id) for d in catalog.DATASETS], "edges": catalog.edges()}
-
-
-@app.get("/api/lineage/openlineage", tags=["catalog"])
-def openlineage() -> list[dict[str, Any]]:
-    """Last run expressed as OpenLineage RunEvents (one per derived dataset)."""
-    when = engine.sim_time().isoformat() + "Z"
-    events = []
-    for d in catalog.DATASETS:
-        if d.layer not in ("silver", "gold"):
-            continue
-        events.append({
-            "eventType": "FAIL" if engine.state[d.id].status == "critical" else "COMPLETE",
-            "eventTime": when,
-            "producer": f"https://github.com/atlas-one/atlas/v{__version__}",
-            "run": {"runId": f"{d.id}-{engine.tick_no}"},
-            "job": {"namespace": "atlas", "name": f"build_{d.id}"},
-            "inputs": [{"namespace": "atlas", "name": u} for u in d.upstream],
-            "outputs": [{"namespace": "atlas", "name": d.id,
-                         "facets": {"dataQualityMetrics": {"rowCount": engine.state[d.id].last_rows}}}],
-        })
-    return events
-
-
-@app.get("/api/contracts", tags=["governance"])
-def contracts() -> list[dict[str, Any]]:
-    violations = {r["dataset"]: r["n"] for r in engine.wh.query(
-        "SELECT dataset, COUNT(*) AS n FROM quarantine GROUP BY dataset")}
-    out = []
-    for c in load_contracts().values():
-        silver = c.dataset.replace("bronze.", "silver.")
-        out.append({**c.to_dict(), "quarantined_rows": violations.get(silver, 0)})
-    return out
-
-
-@app.get("/api/models", tags=["catalog"])
-def models() -> dict[str, str]:
-    return {k: " ".join(v.split()) for k, v in GOLD_MODELS.items()}
-
-
-@app.get("/api/risk/signals", tags=["data-products"])
-def risk_signals(role: Role = Depends(current_role), limit: int = Query(10, le=50)) -> dict[str, Any]:
-    rows = engine.wh.query(
-        """SELECT f.*, a.holder_name, a.segment, a.risk_tier
-           FROM gold_fraud_features f LEFT JOIN silver_accounts a USING (account_id)
-           ORDER BY risk_score DESC LIMIT :limit""",
-        {"limit": limit},
-    )
-    for r in rows:
-        if role != "admin":
-            r["holder_name"] = mask(r["holder_name"], keep=0)
-        if role == "viewer":
-            r["account_id"] = mask(r["account_id"])
-    return {"role": role, "masked": role != "admin", "rows": rows,
-            "stale": engine.state["gold.fraud_features"].status != "healthy"}
-
-
-# ----------------------------------------------------------------- incidents
-@app.get("/api/incidents", tags=["incidents"])
+# --------------------------------------------------------------- incidentes
+@app.get("/api/incidents", tags=["incidentes"])
 def incidents(status: str | None = None) -> list[dict[str, Any]]:
-    items = sorted(engine.incidents.values(), key=lambda i: -i.opened_tick)
+    items = sorted(engine.incidents.values(), key=lambda i: i.opened, reverse=True)
     return [engine.incident_dict(i) for i in items if status is None or i.status == status]
 
 
-@app.get("/api/incidents/{incident_id}", tags=["incidents"])
+@app.get("/api/incidents/{incident_id}", tags=["incidentes"])
 def incident(incident_id: str) -> dict[str, Any]:
-    inc = engine.incidents.get(incident_id)
-    if not inc:
-        raise HTTPException(404, "Unknown incident")
-    return engine.incident_dict(inc, full=True)
+    return engine.incident_dict(_incident_or_404(incident_id), full=True)
 
 
-@app.post("/api/incidents/{incident_id}/copilot", tags=["incidents"])
+@app.post("/api/incidents/{incident_id}/copilot", tags=["incidentes"])
 def incident_copilot(incident_id: str, refresh: bool = False) -> dict[str, Any]:
-    if incident_id not in engine.incidents:
-        raise HTTPException(404, "Unknown incident")
+    _incident_or_404(incident_id)
     if refresh or incident_id not in engine.copilot_cache:
         engine.copilot_cache[incident_id] = copilot.analyze(engine, incident_id)
     return engine.copilot_cache[incident_id]
 
 
-@app.post("/api/incidents/{incident_id}/remediate", tags=["incidents"])
-async def remediate(incident_id: str, role: Role = Depends(require("engineer"))) -> dict[str, Any]:
-    if incident_id not in engine.incidents:
-        raise HTTPException(404, "Unknown incident")
-    inc = engine.remediate(incident_id, actor=role)
+@app.post("/api/incidents/{incident_id}/escalate", tags=["incidentes"])
+async def escalate(incident_id: str) -> dict[str, Any]:
+    _incident_or_404(incident_id)
+    inc = engine.escalate(incident_id)
     await publish()
     return engine.incident_dict(inc, full=True)
 
 
-# -------------------------------------------------------------- failure lab
-class InjectRequest(BaseModel):
-    auto_heal_ticks: int | None = Field(None, ge=1, le=100)
+class ResolveRequest(BaseModel):
+    note: str = Field("", max_length=500)
 
 
-@app.get("/api/faults", tags=["failure-lab"])
-def faults() -> list[dict[str, Any]]:
-    return engine.snapshot()["faults"]
-
-
-@app.post("/api/faults/{fault_id}", tags=["failure-lab"], status_code=201)
-async def inject(fault_id: str, body: InjectRequest | None = None,
-                 role: Role = Depends(require("engineer"))) -> dict[str, Any]:
-    if fault_id not in FAULTS_BY_ID:
-        raise HTTPException(404, "Unknown fault")
-    fault = engine.inject(fault_id, body.auto_heal_ticks if body else None, actor=role)
+@app.post("/api/incidents/{incident_id}/resolve", tags=["incidentes"])
+async def resolve(incident_id: str, body: ResolveRequest) -> dict[str, Any]:
+    _incident_or_404(incident_id)
+    inc = engine.resolve(incident_id, body.note)
     await publish()
-    return fault.to_dict()
+    return engine.incident_dict(inc, full=True)
 
 
-@app.delete("/api/faults/{fault_id}", tags=["failure-lab"])
-async def clear(fault_id: str, role: Role = Depends(require("engineer"))) -> dict[str, bool]:
-    cleared = engine.clear_fault(fault_id, actor=role)
+# ------------------------------------------------------------------- reglas
+class RuleRequest(BaseModel):
+    table: str
+    type: str
+    severity: str = "media"
+    params: dict[str, Any] = Field(default_factory=dict)
+    note: str = Field("", max_length=300)
+    enabled: bool = True
+
+
+@app.get("/api/rules", tags=["reglas"])
+def rules() -> dict[str, Any]:
+    return {
+        "rules": [r.to_dict() for r in engine.rules.rules.values()],
+        "types": RULE_TYPES, "operators": OPERATORS, "aggregates": list(AGGREGATES),
+        "severities": {s: SEVERITY_LABEL[s] for s in SEVERITIES},
+        "tables": {t.name: [{"name": c.name, "type": c.type} for c in t.columns] for t in TABLES},
+    }
+
+
+def _build_rule(body: RuleRequest, rule_id: str) -> Rule:
+    rule = Rule(id=rule_id, table=body.table, type=body.type, severity=body.severity, params=dict(body.params),
+                enabled=body.enabled, note=body.note, author="usuario")
+    try:
+        rule.validate()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return rule
+
+
+@app.post("/api/rules", tags=["reglas"], status_code=201)
+def create_rule(body: RuleRequest) -> dict[str, Any]:
+    rule = engine.rules.add(_build_rule(body, engine.rules.next_id()))
+    return rule.to_dict()
+
+
+@app.post("/api/rules/preview", tags=["reglas"])
+def preview_rule(body: RuleRequest) -> dict[str, Any]:
+    try:
+        return engine.preview_rule(_build_rule(body, "preview"))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class RulePatch(BaseModel):
+    enabled: bool | None = None
+    severity: str | None = None
+    params: dict[str, Any] | None = None
+    note: str | None = None
+
+
+@app.patch("/api/rules/{rule_id}", tags=["reglas"])
+def update_rule(rule_id: str, body: RulePatch) -> dict[str, Any]:
+    if rule_id not in engine.rules.rules:
+        raise HTTPException(404, "Regla no encontrada")
+    try:
+        return engine.rules.update(rule_id, body.model_dump(exclude_none=True)).to_dict()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.delete("/api/rules/{rule_id}", tags=["reglas"])
+def delete_rule(rule_id: str) -> dict[str, bool]:
+    if rule_id not in engine.rules.rules:
+        raise HTTPException(404, "Regla no encontrada")
+    engine.rules.delete(rule_id)
+    return {"deleted": True}
+
+
+# ------------------------------------------------------------- simulación
+@app.post("/api/scenarios/{scenario_id}", tags=["simulación"])
+async def inject(scenario_id: str) -> dict[str, str]:
+    if scenario_id not in SCENARIOS_BY_ID:
+        raise HTTPException(404, "Escenario no encontrado")
+    result = engine.inject(scenario_id)
     await publish()
-    return {"cleared": cleared}
+    return result
 
 
 class ControlRequest(BaseModel):
     running: bool | None = None
     speed: float | None = Field(None, ge=0.25, le=10)
-    chaos: bool | None = None
+    random_anomalies: bool | None = None
+    finish_day: bool = False
+    next_day: bool = False
     reset: bool = False
 
 
-@app.post("/api/control", tags=["ops"])
-async def control(body: ControlRequest, role: Role = Depends(require("engineer"))) -> dict[str, Any]:
+@app.post("/api/control", tags=["simulación"])
+async def control(body: ControlRequest) -> dict[str, Any]:
     if body.reset:
-        if ROLE_RANK[role] < ROLE_RANK["admin"]:
-            raise HTTPException(403, "Reset requires admin")
-        engine.reset()
-        for _ in range(36):
-            engine.tick()
+        await asyncio.to_thread(engine.reset)
+    if body.finish_day or body.next_day:
+        await asyncio.to_thread(engine.run_day)
+    if body.next_day:
+        await asyncio.to_thread(engine.tick)  # closes today and starts tomorrow at 05:30
     if body.running is not None:
         engine.running = body.running
     if body.speed is not None:
         engine.speed = body.speed
-    if body.chaos is not None:
-        engine.chaos = body.chaos
-    snapshot = await publish()
-    return {"running": snapshot["running"], "speed": snapshot["speed"], "chaos": snapshot["chaos"]}
+    if body.random_anomalies is not None:
+        engine.random_anomalies = body.random_anomalies
+    snap = await publish()
+    return {"running": snap["running"], "speed": snap["speed"], "random_anomalies": snap["random_anomalies"]}
 
 
-@app.post("/api/tick", tags=["ops"])
-async def manual_tick(role: Role = Depends(require("engineer"))) -> dict[str, Any]:
-    """Advance one pipeline run (useful while paused)."""
-    snapshot = await asyncio.to_thread(engine.tick)
-    await hub.broadcast(snapshot)
-    return {"tick": snapshot["tick"]}
-
-
-# ------------------------------------------------------------------- metrics
-@app.get("/metrics", response_class=PlainTextResponse, tags=["ops"])
+# ------------------------------------------------------------------ métricas
+@app.get("/metrics", response_class=PlainTextResponse, tags=["operación"])
 def metrics() -> str:
     snap = engine.snapshot()
-    p = snap["platform"]
+    k = snap["kpis"]
     lines = [
-        "# HELP atlas_platform_reliability_score Criticality-weighted reliability score (0-100).",
-        "# TYPE atlas_platform_reliability_score gauge",
-        f"atlas_platform_reliability_score {p['score']}",
-        "# HELP atlas_freshness_slo_ratio Share of tier-1 runs within freshness SLA (%).",
-        "# TYPE atlas_freshness_slo_ratio gauge",
-        f"atlas_freshness_slo_ratio {p['freshness_slo']}",
+        "# HELP atlas_quality_score Puntaje de calidad promedio de las tablas evaluadas hoy (0-100).",
+        "# TYPE atlas_quality_score gauge",
+        f"atlas_quality_score {k['score'] if k['score'] is not None else 'NaN'}",
         "# TYPE atlas_open_incidents gauge",
-        f"atlas_open_incidents {p['open_incidents']}",
-        "# TYPE atlas_rows_ingested_total counter",
-        f"atlas_rows_ingested_total {p['rows_ingested']}",
-        "# TYPE atlas_rows_quarantined_total counter",
-        f"atlas_rows_quarantined_total {p['rows_quarantined']}",
-        "# TYPE atlas_rows_blocked_total counter",
-        f"atlas_rows_blocked_total {p['rows_blocked']}",
-        "# TYPE atlas_tick_duration_ms gauge",
-        f"atlas_tick_duration_ms {p['tick_ms']}",
-        "# TYPE atlas_dataset_reliability_score gauge",
+        f"atlas_open_incidents {k['open_incidents']}",
+        "# TYPE atlas_tables_missing gauge",
+        f"atlas_tables_missing {k['tables_missing']}",
+        "# TYPE atlas_checks_failed gauge",
+        f"atlas_checks_failed {k['checks_failed']}",
+        "# TYPE atlas_table_score gauge",
     ]
-    for d in snap["datasets"]:
-        lines.append(f'atlas_dataset_reliability_score{{dataset="{d["id"]}",layer="{d["layer"]}"}} {d["score"]}')
-    lines.append("# TYPE atlas_dataset_freshness_minutes gauge")
-    for d in snap["datasets"]:
-        if d["freshness_minutes"] is not None and d["layer"] != "consumer":
-            lines.append(f'atlas_dataset_freshness_minutes{{dataset="{d["id"]}"}} {d["freshness_minutes"]}')
+    for t in snap["tables"]:
+        if t["score"] is not None:
+            lines.append(f'atlas_table_score{{tabla="{t["name"]}"}} {t["score"]}')
+    lines.append("# TYPE atlas_table_rows gauge")
+    for t in snap["tables"]:
+        if t["rows"] is not None:
+            lines.append(f'atlas_table_rows{{tabla="{t["name"]}"}} {t["rows"]}')
     return "\n".join(lines) + "\n"
 
 
-# ----------------------------------------------------------------- realtime
+# ---------------------------------------------------------------- tiempo real
 @app.websocket("/ws")
 async def websocket(ws: WebSocket) -> None:
     await ws.accept()
     hub.clients.add(ws)
     try:
-        await ws.send_text(json.dumps({"type": "snapshot", "data": engine.snapshot()}, default=str))
+        await ws.send_text(json.dumps({"type": "snapshot", "data": engine.snapshot()}, default=str,
+                                      ensure_ascii=False))
         while True:
-            await ws.receive_text()  # keep-alive pings from the client
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:

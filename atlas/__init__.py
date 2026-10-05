@@ -1,3 +1,3 @@
-"""ATLAS ONE — reference implementation of a data reliability platform for financial data."""
+"""ATLAS — monitor de calidad de datos para las tablas que se cargan cada día."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

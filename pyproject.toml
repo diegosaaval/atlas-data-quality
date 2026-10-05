@@ -1,7 +1,7 @@
 [project]
 name = "atlas-one"
-version = "0.1.0"
-description = "Reference implementation of a data reliability platform for financial data."
+version = "0.2.0"
+description = "Monitor de calidad de datos: valida las tablas que se cargan cada día y gestiona incidentes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -31,9 +31,9 @@ addopts = "-q"
 pythonpath = [".", "tests"]
 
 [tool.ruff]
-line-length = 120
+line-length = 150
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
-ignore = ["B008"]  # FastAPI dependencies in defaults are idiomatic
+ignore = ["B008", "SIM108"]  # FastAPI defaults are idiomatic; explicit if/else reads better here

@@ -3,28 +3,36 @@ from conftest import open_incidents
 from atlas import copilot
 
 
-def test_rules_copilot_explains_with_evidence(warm):
-    warm.inject("schema_drift")
-    warm.tick()
-    inc = open_incidents(warm)[0]
-    result = copilot.analyze(warm, inc.id, use_llm=False)
-    assert result["mode"] == "rules"
-    assert "amount" in result["probable_root_cause"]
-    assert any("Quarantine reason" in e for e in result["evidence"])
-    assert "reg.regulatory_report" in result["affected_assets"]
-    assert result["remediation_steps"]
-    assert inc.severity in result["stakeholder_update"]
+def test_template_email_has_evidence_cause_and_owner(engine):
+    engine.inject("tasa_mora_negativa")
+    engine.run_day()
+    inc = next(i for i in open_incidents(engine) if i.table == "indicadores_cartera")
+    mail = copilot.analyze(engine, inc.id, use_llm=False)
+    assert mail["mode"] == "plantilla"
+    assert mail["to"] == "riesgo.credito@banco.example"
+    assert "[ATLAS][Crítica]" in mail["asunto"]
+    assert "tasa_mora" in mail["cuerpo"] and "Riesgo de Crédito" in mail["cuerpo"]
+    assert "error de cálculo" in mail["causa_probable"]
+    assert "-" in mail["cuerpo"] and "9999999" not in mail["cuerpo"]  # números formateados
 
 
-def test_llm_failure_falls_back_to_rules(warm, monkeypatch):
-    warm.inject("duplicate_load")
-    warm.tick()
-    inc = open_incidents(warm)[0]
+def test_volume_cause_distinguishes_drop_from_duplication(engine):
+    engine.inject("ingesta_borrada")
+    engine.inject("carga_duplicada")
+    engine.run_day()
+    by_table = {i.table: copilot.analyze(engine, i.id, use_llm=False) for i in open_incidents(engine)}
+    assert "incompleta" in by_table["pagos"]["causa_probable"]
+    assert "idempotente" in by_table["cartera_creditos"]["causa_probable"]
 
-    def boom(*_args, **_kwargs):
-        raise RuntimeError("no network")
+
+def test_llm_failure_falls_back_to_template(engine, monkeypatch):
+    engine.inject("nulos_documento")
+    engine.run_day()
+    inc = next(i for i in open_incidents(engine) if i.table == "clientes")
+
+    def boom(*_a, **_k):
+        raise RuntimeError("sin red")
 
     monkeypatch.setattr(copilot, "claude_analysis", boom)
-    result = copilot.analyze(warm, inc.id, use_llm=True)
-    assert result["mode"] == "rules"
-    assert "no network" in result["fallback_reason"]
+    mail = copilot.analyze(engine, inc.id, use_llm=True)
+    assert mail["mode"] == "plantilla" and "sin red" in mail["fallback_reason"]

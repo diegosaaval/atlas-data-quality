@@ -1,79 +1,66 @@
-"""ATLAS engine: runs one pipeline DAG per tick and keeps the reliability state.
+"""ATLAS engine: plays the morning, validates each table as it lands, manages incidents.
 
-One tick == one 5-minute micro-batch in simulated time:
-
-    sources -> bronze -> silver (contracts, dedup, RI, FX) -> checks
-            -> quality gate -> gold models -> incidents -> snapshot
-
-The engine is synchronous and deterministic for a given seed; the API layer
-drives it from an asyncio loop and streams snapshots over WebSocket.
+Simulated clock: every tick is 15 minutes between 05:30 and 10:30. Tables arrive around
+their agreed time; ATLAS validates them on arrival, flags the ones that do not show up,
+and opens one incident per table with everything the owning team needs to act.
 """
 
 from __future__ import annotations
 
 import random
+import statistics
 import threading
-import time
-from collections import Counter, deque
+from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
-from . import catalog, checks, runbooks
-from .checks import FAIL, WARN, CheckResult
+from . import monitors
 from .config import Settings, get_settings
-from .contracts import get_contract
-from .faults import FAULTS, FAULTS_BY_ID, ActiveFault
-from .sources import SyntheticSources
-from .warehouse import GOLD_MODELS, Warehouse
+from .monitors import GRACE_MINUTES, hhmm
+from .rules import FAIL, OK, SEVERITY_LABEL, SEVERITY_WEIGHT, WARN, CheckResult, RuleStore, baseline, evaluate
+from .store import Store
+from .tables import BY_NAME, DAYS_ES, SCENARIOS, SCENARIOS_BY_ID, TABLES, Load, SyntheticBank
 
-SIM_START = datetime(2026, 10, 1, 6, 0)
-COST_PER_1K_ROWS = 0.0025  # USD, rough serverless-compute estimate
-COST_PER_TASK = 0.0004
-TRACE_STEPS = ("injected", "detected", "gate", "incident", "blast_radius", "proposed", "remediation", "recovered")
+DAY_START, DAY_END, STEP = 5 * 60 + 30, 10 * 60 + 30, 15
+HISTORY_DAYS = 70
+# Past incidents so the history has something to show: days before today -> (table, scenario)
+SEEDED_HISTORY = {40: "ingesta_borrada", 33: "carga_duplicada", 26: "pico_desembolsos",
+                  19: "tasa_mora_negativa", 12: "nulos_documento", 5: "llega_tarde"}
+STATUS_LABEL = {"esperando": "Esperando", "retrasada": "Retrasada", "no_disponible": "No disponible",
+                "ok": "OK", "advertencia": "Advertencia", "falla": "Con fallas"}
 
 
 @dataclass
-class DatasetState:
-    data_as_of: datetime | None = None
-    last_rows: int = 0
-    checks: list[CheckResult] = field(default_factory=list)
-    status: str = "healthy"
-    score: float = 100.0
-    blocked: bool = False
+class TableState:
+    load: Load
+    status: str = "esperando"
+    arrived: int | None = None
+    results: list[CheckResult] = field(default_factory=list)
+    score: float | None = None
+    scenario: str | None = None
 
 
 @dataclass
 class Incident:
     id: str
-    dataset: str
-    category: str
+    table: str
     severity: str
-    opened_tick: int
-    status: str = "open"  # open -> mitigating -> resolved
+    opened: tuple[str, int]  # (iso date, minute)
+    title: str
+    status: str = "abierto"  # abierto -> escalado -> resuelto
     checks: list[dict] = field(default_factory=list)
-    symptoms: set[str] = field(default_factory=set)
-    blocked_models: set[str] = field(default_factory=set)
     timeline: list[dict] = field(default_factory=list)
-    fault_ids: list[str] = field(default_factory=list)
-    fault_injected_tick: int | None = None
-    resolved_tick: int | None = None
-    clear_streak: int = 0
+    resolved: tuple[str, int] | None = None
+    resolution: str | None = None
+    scenario: str | None = None
+    loads_failed: int = 1
+    _last_day: str = ""
 
-    @property
-    def title(self) -> str:
-        return f"{runbooks.LABELS[self.category]} on {self.dataset}"
-
-    def mttd_minutes(self, tick_minutes: int) -> int | None:
-        if self.fault_injected_tick is None:
-            return None
-        # Detection happens at the end of the run that first carried the fault.
-        return (self.opened_tick - self.fault_injected_tick + 1) * tick_minutes
-
-    def mttr_minutes(self, tick_minutes: int) -> int | None:
-        if self.resolved_tick is None:
-            return None
-        return (self.resolved_tick - self.opened_tick) * tick_minutes
+    def minutes_open(self, now: tuple[str, int]) -> int:
+        end = self.resolved or now
+        days = (date.fromisoformat(end[0]) - date.fromisoformat(self.opened[0])).days
+        return days * 1440 + end[1] - self.opened[1]
 
 
 class Engine:
@@ -82,531 +69,385 @@ class Engine:
         self.lock = threading.RLock()
         self.running = True
         self.speed = 1.0
-        self.chaos = False
+        self.random_anomalies = self.settings.random_anomalies
         self.reset()
 
     # ------------------------------------------------------------------ setup
     def reset(self) -> None:
         with self.lock:
             s = self.settings
-            self.tick_no = -1
-            self.wh = Warehouse(s.db_path)
-            self.sources = SyntheticSources(s.seed, SIM_START)
-            self.chaos_rng = random.Random(s.seed + 1)
-            self.state = {d.id: DatasetState() for d in catalog.DATASETS}
-            self.active_faults: dict[str, ActiveFault] = {}
-            self.traces: deque[dict] = deque(maxlen=10)
+            if getattr(self, "store", None) is not None:
+                self.store.close()
+            self.store = Store(s.db_path)
+            self.rules = RuleStore(s.rules_path)
+            self.bank = SyntheticBank(s.seed)
+            self.rng = random.Random(s.seed + 1)
+            self.today: date = s.start_date - timedelta(days=HISTORY_DAYS)
+            self.minute = DAY_START
+            self.tables: dict[str, TableState] = {}
             self.incidents: dict[str, Incident] = {}
-            self._incident_seq = 0
-            self.events: deque[dict] = deque(maxlen=200)
-            self.series: dict[str, deque] = {k: deque(maxlen=180) for k in
-                                             ("tick", "score", "ingested", "accepted", "quarantined", "blocked")}
-            self.volume_history: deque[int] = deque(maxlen=12)
-            self.amount_history: deque[float] = deque(maxlen=24)
-            self.slo_window: dict[str, deque[bool]] = {
-                d.id: deque(maxlen=s.retention_ticks) for d in catalog.DATASETS if d.layer in ("silver", "gold")}
-            self.totals: Counter = Counter()
-            self.last_run: list[dict] = []
-            self.last_tick_ms = 0.0
+            self._seq = 0
+            self.events: deque[dict] = deque(maxlen=150)
+            self.queued: dict[str, str] = {}
             self.copilot_cache: dict[str, dict] = {}
+            self._bootstrapping = True
+            for back in range(HISTORY_DAYS, 0, -1):
+                scenario = SEEDED_HISTORY.get(back)
+                if scenario:
+                    self.queued[SCENARIOS_BY_ID[scenario].table] = scenario
+                self._start_day(self.today)
+                while self.minute < DAY_END:
+                    self._advance()
+                self._close_day()
+                self.today += timedelta(days=1)
+            self._bootstrapping = False
+            self.events.clear()
+            self._start_day(self.today)
 
-    def sim_time(self, tick: int | None = None) -> datetime:
-        return SIM_START + timedelta(minutes=self.settings.tick_minutes * (self.tick_no if tick is None else tick))
+    def close(self) -> None:
+        self.store.close()
 
-    def log(self, level: str, message: str, dataset: str | None = None) -> None:
-        self.events.appendleft({"tick": self.tick_no, "time": self.sim_time().strftime("%H:%M"),
-                                "level": level, "message": message, "dataset": dataset})
+    @property
+    def now(self) -> tuple[str, int]:
+        return self.today.isoformat(), self.minute
 
-    # ----------------------------------------------------------------- faults
-    def inject(self, fault_id: str, auto_heal_ticks: int | None = None, actor: str = "engineer") -> ActiveFault:
-        with self.lock:
-            spec = FAULTS_BY_ID[fault_id]
-            if fault_id in self.active_faults:
-                return self.active_faults[fault_id]
-            tick = self.tick_no + 1  # takes effect on the next pipeline run
-            fault = ActiveFault(spec, tick, tick + auto_heal_ticks if auto_heal_ticks else None)
-            self.active_faults[fault_id] = fault
-            self.traces.appendleft({"fault": spec.id, "name": spec.name, "detected_on": spec.detected_on,
-                                    "steps": {"injected": tick}, "notes": {}})
-            self.log("warn", f"Fault injected by {actor}: {spec.name} → {spec.target}", spec.target)
-            return fault
+    def log(self, level: str, message: str, table: str | None = None) -> None:
+        if not self._bootstrapping:
+            self.events.appendleft({"date": self.today.isoformat(), "time": hhmm(self.minute), "level": level,
+                                    "message": message, "table": table})
 
-    def clear_fault(self, fault_id: str, actor: str = "engineer") -> bool:
-        with self.lock:
-            fault = self.active_faults.pop(fault_id, None)
-            if fault:
-                self.log("info", f"Fault cleared by {actor}: {fault.spec.name}", fault.spec.target)
-            return fault is not None
-
-    def remediate(self, incident_id: str, actor: str = "engineer") -> Incident:
-        with self.lock:
-            inc = self.incidents[incident_id]
-            cleared = [f for f in inc.fault_ids if self.clear_fault(f, actor)]
-            # Organic incidents (no linked fault): clear any fault detected on this dataset.
-            for fid, fault in list(self.active_faults.items()):
-                if fault.spec.detected_on == inc.dataset:
-                    self.clear_fault(fid, actor)
-                    cleared.append(fid)
-            if inc.status == "open":
-                inc.status = "mitigating"
-            steps = runbooks.RUNBOOKS[inc.category]["steps"]
-            self._timeline(inc, "remediation", f"Remediation applied by {actor}: {steps[min(1, len(steps) - 1)]}")
-            for fid in cleared:
-                self._trace_step(fid, "remediation", self.tick_no)
-            return inc
-
-    def _trace_step(self, fault_id: str, step: str, tick: int, note: str | None = None) -> None:
-        for trace in self.traces:
-            if trace["fault"] == fault_id:
-                if step not in trace["steps"]:
-                    trace["steps"][step] = tick
-                    if note:
-                        trace["notes"][step] = note
-                return
-
-    def _maybe_chaos(self) -> None:
-        if not self.chaos or self.active_faults or self.chaos_rng.random() > 0.05:
-            return
-        spec = self.chaos_rng.choice(FAULTS)
-        self.inject(spec.id, auto_heal_ticks=self.chaos_rng.randint(6, 12), actor="chaos-monkey")
-
-    def _auto_heal(self, tick: int) -> None:
-        for fid, fault in list(self.active_faults.items()):
-            if fault.auto_heal_tick is not None and tick >= fault.auto_heal_tick:
-                for inc in self.incidents.values():
-                    if fid in inc.fault_ids and inc.status == "open":
-                        inc.status = "mitigating"
-                        self._timeline(inc, "remediation", "Auto-remediated by on-call automation")
-                self._trace_step(fid, "remediation", tick)
-                self.clear_fault(fid, actor="on-call automation")
-
-    # ------------------------------------------------------------------- tick
+    # -------------------------------------------------------------- the clock
     def tick(self) -> dict[str, Any]:
         with self.lock:
-            started = time.perf_counter()
-            self.tick_no += 1
-            t, now = self.tick_no, self.sim_time(self.tick_no)
-            self._auto_heal(t)
-            self._maybe_chaos()
-            faults = {fid for fid, f in self.active_faults.items() if f.injected_tick <= t}
-
-            tasks: list[dict] = []
-            results: list[CheckResult] = []
-            out = self.sources.emit(t, now, faults)
-            for d in catalog.DATASETS:
-                if d.layer == "source":
-                    self.state[d.id].data_as_of = now
-
-            # ---- ingest -------------------------------------------------
-            acc_error = out.errors.get("bronze.accounts")
-            if out.accounts is not None:
-                n = self.wh.load_bronze("bronze_accounts", f"acc-{t}", t, now.isoformat(), out.accounts.records)
-                self._loaded("bronze.accounts", now, n)
-                tasks.append(self._task("ingest_accounts", "success", n))
+            if self.minute >= DAY_END:
+                self._close_day()
+                self.today += timedelta(days=1)
+                self._start_day(self.today)
             else:
-                tasks.append(self._task("ingest_accounts", "failed", 0, acc_error))
-            results.append(checks.pipeline("bronze.accounts", acc_error))
-
-            txn_records: list[dict] = []
-            regular: list[dict] = []
-            for batch in out.transactions:
-                self.wh.load_bronze("bronze_transactions", f"txn-{t}{'-bf' if batch.is_backfill else ''}", t,
-                                    now.isoformat(), batch.records, batch.is_backfill)
-                txn_records.extend(batch.records)
-                if not batch.is_backfill:
-                    regular = batch.records
-            regular_rows = len(regular)
-            if out.transactions:
-                self._loaded("bronze.transactions", now, len(txn_records))
-                backfill = len(out.transactions) - (1 if regular_rows else 0)
-                tasks.append(self._task("ingest_transactions", "success", len(txn_records),
-                                        f"{backfill} backfilled partition(s)" if backfill else None))
-                if backfill:
-                    self.log("info", f"Backfilled {backfill} late partition(s) into bronze.transactions",
-                             "bronze.transactions")
-            else:
-                tasks.append(self._task("ingest_transactions", "no_data", 0, "Expected partition did not arrive"))
-
-            if out.fx is not None:
-                self.wh.load_bronze("bronze_fx_rates", f"fx-{t}", t, now.isoformat(), out.fx.records)
-                self.wh.insert_fx(out.fx.records, t)
-                self._loaded("bronze.fx_rates", now, len(out.fx.records))
-                tasks.append(self._task("ingest_fx", "success", len(out.fx.records)))
-            else:
-                tasks.append(self._task("ingest_fx", "no_data", 0, "Provider returned no quotes"))
-
-            # ---- silver.accounts ---------------------------------------
-            acc_contract = get_contract("bronze.accounts")
-            if out.accounts is not None:
-                observed = set().union(*(r.keys() for r in out.accounts.records)) if out.accounts.records else \
-                    acc_contract.column_names
-                results.append(checks.schema("bronze.accounts", acc_contract, observed))
-                good, bad = [], []
-                for r in out.accounts.records:
-                    reasons = acc_contract.validate(r)
-                    (bad.append((r, reasons)) if reasons else good.append(r))
-                self.wh.upsert_accounts(good, t)
-                self.wh.quarantine("silver.accounts", f"acc-{t}", t, bad)
-                self._derive("silver.accounts", len(good))
-                tasks.append(self._task("silver_accounts", "success", len(good)))
-            else:
-                tasks.append(self._task("silver_accounts", "skipped", 0, "Upstream task failed"))
-
-            # ---- bronze.transactions checks + silver.transactions ------
-            txn_contract = get_contract("bronze.transactions")
-            silver_accepted = 0
-            quarantined = 0
-            if txn_records:
-                observed = set().union(*(r.keys() for r in txn_records))
-                results.append(checks.schema("bronze.transactions", txn_contract, observed))
-                nulls = {c: sum(1 for r in txn_records if r.get(c) in (None, ""))
-                         for c in txn_contract.required_columns if c in observed}
-                results.append(checks.completeness("bronze.transactions", nulls, len(txn_records)))
-
-                ids = [r.get("txn_id") for r in txn_records]
-                existing = self.wh.existing_txn_ids([i for i in ids if i])
-                seen: set[str] = set()
-                unique: list[dict] = []
-                dup = 0
-                for r in txn_records:
-                    tid = r.get("txn_id")
-                    if tid in seen or tid in existing:
-                        dup += 1
-                        continue
-                    seen.add(tid)
-                    unique.append(r)
-                results.append(checks.duplicates("bronze.transactions", dup, len(txn_records)))
-
-                if regular_rows:
-                    vol = checks.volume("bronze.transactions", regular_rows, self.volume_history)
-                    results.append(vol)
-                    if vol.status != FAIL:  # never learn the baseline from anomalies
-                        self.volume_history.append(regular_rows)
-                    # Reconcile only rows that are new to the platform (replays are not the replica's problem).
-                    distinct = {r.get("txn_id"): r for r in regular if r.get("txn_id") not in existing}.values()
-                    results.append(checks.reconciliation(
-                        "bronze.transactions", len(distinct),
-                        sum(float(r.get("amount", r.get("amount_value")) or 0) for r in distinct), out.replica))
-
-                fx = self.wh.latest_fx() or 4000.0
-                known = self.wh.known_accounts({r["account_id"] for r in unique if r.get("account_id")})
-                good, bad, orphans = [], [], 0
-                for r in unique:
-                    reasons = txn_contract.validate(r)
-                    if r.get("account_id") and r["account_id"] not in known:
-                        reasons.append("account_id: unknown account")
-                        orphans += 1
-                    if reasons:
-                        bad.append((r, reasons))
-                        continue
-                    amount_cop = r["amount"] * fx if r["currency"] == "USD" else r["amount"]
-                    good.append({**r, "amount_cop": round(amount_cop, 2)})
-                silver_accepted = self.wh.insert_transactions(good, t)
-                quarantined = len(bad)
-                self.wh.quarantine("silver.transactions", f"txn-{t}", t, bad)
-                results.append(checks.validity("silver.transactions", quarantined, len(unique)))
-                results.append(checks.integrity("silver.transactions", orphans, len(unique)))
-                if good:
-                    mean_amount = sum(g["amount_cop"] for g in good) / len(good)
-                    dist = checks.distribution("silver.transactions", mean_amount, self.amount_history)
-                    results.append(dist)
-                    if dist.status == "pass":
-                        self.amount_history.append(mean_amount)
-                self._derive("silver.transactions", silver_accepted)
-                tasks.append(self._task("silver_transactions", "success", silver_accepted,
-                                        f"{quarantined} quarantined" if quarantined else None))
-            else:
-                tasks.append(self._task("silver_transactions", "skipped", 0, "No new bronze data"))
-
-            # ---- freshness for bronze & silver ------------------------
-            for d in catalog.DATASETS:
-                if d.layer in ("bronze", "silver"):
-                    results.append(checks.freshness(d.id, self._age(d.id, now), d.sla_minutes,
-                                                    self.settings.tick_minutes))
-            tasks.append(self._task("quality_checks", "success", len(results)))
-
-            # ---- quality gate + gold ----------------------------------
-            blockers = [r for r in results if r.blocking]
-            blocked_models: dict[str, list[CheckResult]] = {}
-            since = t - 60 // self.settings.tick_minutes + 1
-            for model in GOLD_MODELS:
-                model_blockers = [b for b in blockers if b.dataset in catalog.ancestors(model)]
-                state = self.state[model]
-                if model_blockers:
-                    blocked_models[model] = model_blockers
-                    state.blocked = True
-                    tasks.append(self._task(f"build_{model.split('.')[1]}", "blocked", 0,
-                                            f"Quality gate: {model_blockers[0].dataset}.{model_blockers[0].name}"))
-                else:
-                    state.blocked = False
-                    rows = self.wh.build_gold(model, since)
-                    self._derive(model, rows)
-                    tasks.append(self._task(f"build_{model.split('.')[1]}", "success", rows))
-            gate_status = "blocked" if blocked_models else "success"
-            tasks.insert(len(tasks) - len(GOLD_MODELS),
-                         self._task("quality_gate", gate_status, len(blockers),
-                                    f"{len(blocked_models)} model(s) held back" if blocked_models else None))
-            for model in GOLD_MODELS:
-                d = catalog.get(model)
-                results.append(checks.freshness(model, self._age(model, now), d.sla_minutes,
-                                                self.settings.tick_minutes))
-
-            # ---- state, scores, incidents -----------------------------
-            self._update_state(results)
-            self.wh.record_checks(t, results)
-            self._update_incidents(results, blocked_models)
-            self._update_series(regular_rows or len(txn_records), silver_accepted, quarantined,
-                                silver_accepted if blocked_models else 0)
-            if t % 12 == 0:
-                self.wh.prune(t - self.settings.retention_ticks)
-            self.last_run = tasks
-            self.last_tick_ms = (time.perf_counter() - started) * 1000
+                self._advance()
             return self.snapshot()
 
-    # --------------------------------------------------------------- helpers
-    @staticmethod
-    def _task(name: str, status: str, rows: int, note: str | None = None) -> dict:
-        cost = COST_PER_TASK + rows / 1000 * COST_PER_1K_ROWS if status == "success" else 0.0
-        return {"task": name, "status": status, "rows": rows, "note": note, "cost_usd": round(cost, 6)}
+    def run_day(self) -> None:
+        """Advance to the end of the current day (tests / 'skip to end of day')."""
+        with self.lock:
+            while self.minute < DAY_END:
+                self._advance()
 
-    def _loaded(self, dataset_id: str, when: datetime, rows: int) -> None:
-        state = self.state[dataset_id]
-        state.data_as_of = when
-        state.last_rows = rows
+    def _start_day(self, day: date) -> None:
+        if self.random_anomalies and not self._bootstrapping and self.rng.random() < 0.3:
+            pick = self.rng.choice(SCENARIOS)
+            self.queued.setdefault(pick.table, pick.id)
+        scenarios, self.queued = self.queued, {}
+        loads = self.bank.generate_day(day, scenarios)
+        self.minute = DAY_START
+        self.tables = {name: TableState(load, scenario=scenarios.get(name)) for name, load in loads.items()}
+        self.log("info", f"Nuevo día: {DAYS_ES[day.weekday()]} {day.isoformat()}. Esperando {len(TABLES)} cargas.")
 
-    def _derive(self, dataset_id: str, rows: int) -> None:
-        """A derived dataset is only as fresh as its stalest input."""
-        ups = [self.state[u].data_as_of for u in catalog.get(dataset_id).upstream]
-        self.state[dataset_id].data_as_of = None if any(u is None for u in ups) else min(ups)
-        self.state[dataset_id].last_rows = rows
-
-    def _age(self, dataset_id: str, now: datetime) -> float | None:
-        as_of = self.state[dataset_id].data_as_of
-        return None if as_of is None else (now - as_of).total_seconds() / 60
-
-    def _update_state(self, results: list[CheckResult]) -> None:
-        by_ds: dict[str, list[CheckResult]] = {}
-        for r in results:
-            by_ds.setdefault(r.dataset, []).append(r)
-        for d in catalog.DATASETS:
-            st = self.state[d.id]
-            if d.layer == "source":
-                st.status = "fault" if any(f.spec.target == d.id for f in self.active_faults.values()) else "healthy"
+    def _advance(self) -> None:
+        self.minute += STEP
+        for spec in TABLES:
+            st = self.tables[spec.name]
+            if st.arrived is not None:
                 continue
-            if d.layer == "consumer":
-                bad = [u for u in d.upstream if self.state[u].status in ("critical", "blocked")]
-                st.status = "degraded" if bad else "healthy"
-                st.score = min(self.state[u].score for u in d.upstream)
-                continue
-            st.checks = by_ds.get(d.id, st.checks)
-            st.score = checks.dataset_score(st.checks)
-            if any(c.status == FAIL for c in st.checks):
-                st.status = "critical"
-            elif st.blocked:
-                st.status = "blocked"
-            elif any(c.status == WARN for c in st.checks):
-                st.status = "warning"
-            else:
-                st.status = "healthy"
-            if st.blocked:
-                st.score = max(0.0, st.score - 20)
-            if d.id in self.slo_window:
-                fresh = next((c for c in st.checks if c.name == "freshness"), None)
-                self.slo_window[d.id].append(fresh is None or fresh.status != FAIL)
+            arrives = st.load.arrives_at
+            if arrives is not None and arrives <= self.minute:
+                self._deliver(spec.name, arrives)
+            elif self.minute >= spec.expected_at + GRACE_MINUTES and st.status != "no_disponible":
+                st.status = "no_disponible"
+                st.results = [monitors.availability(spec, None, self.minute)]
+                st.score = 0.0
+                self.log("error", f"{spec.name} no ha llegado (esperada {spec.expected_hhmm}).", spec.name)
+                self._update_incident(spec.name, st.results)
+            elif self.minute >= spec.expected_at and st.status == "esperando":
+                st.status = "retrasada"
+                self.log("warn", f"{spec.name} aún no llega (esperada {spec.expected_hhmm}).", spec.name)
 
-    def _timeline(self, inc: Incident, kind: str, message: str) -> None:
-        inc.timeline.append({"tick": self.tick_no, "time": self.sim_time().strftime("%H:%M"),
-                             "kind": kind, "message": message})
-
-    @staticmethod
-    def _severity(dataset_id: str, stops_data: bool) -> str:
-        """SEV1: data stopped for a regulatory product. SEV2: tier-1 at risk. SEV3: everything else."""
-        impacted = {dataset_id, *catalog.descendants(dataset_id)}
-        if stops_data and "reg.regulatory_report" in impacted:
-            return "SEV1"
-        if any(catalog.get(i).criticality == "tier1" for i in impacted):
-            return "SEV2"
-        return "SEV3"
-
-    def _update_incidents(self, results: list[CheckResult], blocked_models: dict[str, list[CheckResult]]) -> None:
-        t = self.tick_no
+    def _deliver(self, name: str, arrived: int) -> None:
+        spec = BY_NAME[name]
+        st = self.tables[name]
+        iso = self.today.isoformat()
+        st.arrived = arrived
+        rows = st.load.rows
+        self.store.insert_load(spec, iso, hhmm(arrived), rows, st.load.columns)
+        results = [monitors.availability(spec, arrived, self.minute),
+                   monitors.volume(spec, len(rows), self.store, self.today),
+                   monitors.structure(spec, st.load.columns)]
+        results += [evaluate(rule, self.store, self.today, len(rows)) for rule in self.rules.for_table(name)]
+        st.results = results
+        st.score = self._score(results)
         failing = [r for r in results if r.status == FAIL]
-        failing_ds = {r.dataset for r in failing}
-        roots: dict[str, list[CheckResult]] = {}
-        symptoms: list[CheckResult] = []
-        for r in failing:
-            if catalog.ancestors(r.dataset) & failing_ds:
-                symptoms.append(r)
-            else:
-                roots.setdefault(r.dataset, []).append(r)
+        st.status = "falla" if failing else "advertencia" if any(r.status in (WARN, "error") for r in results) else "ok"
+        self.store.put_metric(iso, name, "score", st.score)
+        self.store.record_checks(iso, results)
+        n_rules = sum(1 for r in results if r.kind == "regla")
+        if failing:
+            self.log("error", f"{name} llegó ({len(rows):,} filas): {len(failing)} control(es) fallaron."
+                     .replace(",", "."), name)
+        else:
+            self.log("success", f"{name} llegó a las {hhmm(arrived)} ({len(rows):,} filas) · {n_rules} reglas OK."
+                     .replace(",", "."), name)
+        self._update_incident(name, results)
 
-        open_by_ds = {i.dataset: i for i in self.incidents.values() if i.status != "resolved"}
-        for ds, ds_checks in roots.items():
-            main = runbooks.primary(ds_checks)
-            inc = open_by_ds.get(ds)
+    def _close_day(self) -> None:
+        iso = self.today.isoformat()
+        for name, st in self.tables.items():
+            if st.arrived is None:  # never arrived: record the failure for the history
+                self.store.put_metric(iso, name, "score", 0.0)
+                self.store.record_checks(iso, st.results or [monitors.availability(BY_NAME[name], None, DAY_END)])
+        scores = [st.score for st in self.tables.values() if st.score is not None]
+        if scores:
+            self.store.put_metric(iso, "_global", "score", statistics.fmean(scores))
+        self.store.prune_rows((self.today - timedelta(days=7)).isoformat())
+
+    @staticmethod
+    def _score(results: list[CheckResult]) -> float:
+        total = sum(SEVERITY_WEIGHT[r.severity] for r in results)
+        got = sum(SEVERITY_WEIGHT[r.severity] * (1 if r.status == OK else 0.5 if r.status == WARN else 0)
+                  for r in results)
+        return round(100 * got / total, 1) if total else 100.0
+
+    # -------------------------------------------------------------- incidents
+    def _timeline(self, inc: Incident, kind: str, text: str) -> None:
+        inc.timeline.append({"date": self.today.isoformat(), "time": hhmm(self.minute), "kind": kind, "text": text})
+
+    def _open_incident(self, name: str) -> Incident | None:
+        return next((i for i in self.incidents.values() if i.table == name and i.resolved is None), None)
+
+    def _update_incident(self, name: str, results: list[CheckResult]) -> None:
+        failing = [r for r in results if r.status == FAIL]
+        inc = self._open_incident(name)
+        iso = self.today.isoformat()
+        spec = BY_NAME[name]
+        if failing:
+            failing.sort(key=lambda r: -SEVERITY_WEIGHT[r.severity])
+            main = failing[0]
             if inc is None:
-                inc = self._open_incident(ds, main)
-                open_by_ds[ds] = inc
-            inc.checks = [c.to_dict() for c in sorted(ds_checks, key=lambda c: runbooks.PRIORITY.index(c.dimension))]
-            inc.clear_streak = 0
+                self._seq += 1
+                inc = Incident(f"INC-{self._seq:04d}", name, main.severity, self.now,
+                               f"{main.name}", scenario=self.tables[name].scenario, _last_day=iso)
+                self.incidents[inc.id] = inc
+                self._timeline(inc, "detectado", f"Detectado: {main.message}")
+                if main.severity == "critica":
+                    self._timeline(inc, "notificado",
+                                   f"Notificación automática a {spec.owner} ({spec.owner_email}) por severidad crítica.")
+                self.log("error", f"{inc.id} abierto [{SEVERITY_LABEL[inc.severity]}] {name}: {main.name}", name)
+            elif inc._last_day != iso:
+                inc.loads_failed += 1
+                inc._last_day = iso
+                self._timeline(inc, "persiste", f"La carga del {iso} sigue fallando: {main.message}")
+            if SEVERITY_WEIGHT[main.severity] > SEVERITY_WEIGHT[inc.severity]:
+                self._timeline(inc, "escalado", f"Severidad sube a {SEVERITY_LABEL[main.severity]}.")
+                inc.severity = main.severity
+            inc.checks = [r.to_dict() for r in failing]
+        elif inc is not None:
+            arrived = self.tables[name].arrived
+            reason = (f"La tabla llegó a las {hhmm(arrived)} y todos los controles pasan."
+                      if any(c["check_id"] == "disponibilidad" for c in inc.checks)
+                      else f"La carga del {iso} cumple todos los controles.")
+            self._resolve(inc, "automática", reason)
 
-        for s in symptoms:
-            for inc in open_by_ds.values():
-                if inc.dataset in catalog.ancestors(s.dataset):
-                    inc.symptoms.add(f"{s.dataset} · {s.name}")
+    def _resolve(self, inc: Incident, mode: str, text: str) -> None:
+        inc.status = "resuelto"
+        inc.resolved = self.now
+        inc.resolution = mode
+        self._timeline(inc, "resuelto", f"Resuelto ({mode}): {text}")
+        self.log("success", f"{inc.id} resuelto: {inc.table}", inc.table)
 
-        for inc in open_by_ds.values():
-            newly = sorted(
-                model for model, model_blockers in blocked_models.items()
-                if model not in inc.blocked_models and any(
-                    b.dataset == inc.dataset or inc.dataset in catalog.ancestors(b.dataset) for b in model_blockers)
-            )
-            if not newly:
-                continue
-            inc.blocked_models.update(newly)
-            self._timeline(inc, "gate", f"Quality gate held back {', '.join(newly)}; last good version kept")
-            escalated = self._severity(inc.dataset, stops_data=True)
-            if escalated < inc.severity:
-                self._timeline(inc, "escalated", f"Severity escalated {inc.severity} → {escalated}")
-                inc.severity = escalated
-            for fid in inc.fault_ids:
-                self._trace_step(fid, "gate", t)
+    def escalate(self, incident_id: str, actor: str = "analista") -> Incident:
+        with self.lock:
+            inc = self.incidents[incident_id]
+            spec = BY_NAME[inc.table]
+            if inc.status == "abierto":
+                inc.status = "escalado"
+            self._timeline(inc, "escalado", f"Escalado por {actor} a {spec.owner} ({spec.owner_email}).")
+            self.log("warn", f"{inc.id} escalado a {spec.owner}", inc.table)
+            return inc
 
-        for inc in list(open_by_ds.values()):
-            if inc.dataset in roots:
-                continue
-            inc.clear_streak += 1
-            if inc.clear_streak >= 2:
-                inc.status = "resolved"
-                inc.resolved_tick = t
-                self._timeline(inc, "recovered", "All checks green for 2 consecutive runs — incident resolved")
-                self.log("success", f"{inc.id} resolved: {inc.title}", inc.dataset)
-                self.totals["incidents_resolved"] += 1
-                for fid in inc.fault_ids:
-                    self._trace_step(fid, "recovered", t)
+    def resolve(self, incident_id: str, note: str, actor: str = "analista") -> Incident:
+        with self.lock:
+            inc = self.incidents[incident_id]
+            if inc.resolved is None:
+                self._resolve(inc, "manual", f"{note or 'Sin comentario'} — {actor}")
+            return inc
 
-    def _open_incident(self, ds: str, main: CheckResult) -> Incident:
-        t = self.tick_no
-        self._incident_seq += 1
-        category = runbooks.classify(main)
-        inc = Incident(id=f"INC-{self._incident_seq:04d}", dataset=ds, category=category,
-                       severity=self._severity(ds, main.blocking or main.dimension == "pipeline"),
-                       opened_tick=t)
-        linked = [f for f in self.active_faults.values()
-                  if f.spec.detected_on == ds or f.spec.target in catalog.ancestors(ds)]
-        if linked:
-            inc.fault_ids = [f.spec.id for f in linked]
-            inc.fault_injected_tick = min(f.injected_tick for f in linked)
-        self.incidents[inc.id] = inc
-        self._timeline(inc, "detected", f"{main.name} failed: {main.message}")
-        radius = catalog.blast_radius(ds)
-        self._timeline(inc, "blast_radius", f"Blast radius: {len(radius)} downstream assets "
-                                            f"({sum(1 for d in radius if d.criticality == 'tier1')} tier-1)")
-        self._timeline(inc, "remediation", f"Runbook attached: {runbooks.RUNBOOKS[category]['title']}")
-        self.log("error", f"{inc.id} opened [{inc.severity}] {inc.title}", ds)
-        self.totals["incidents_opened"] += 1
-        for f in linked:
-            for step in ("detected", "incident", "blast_radius"):
-                self._trace_step(f.spec.id, step, t)
-            self._trace_step(f.spec.id, "proposed", t)
-            if main.dimension not in checks.BLOCKING:
-                self._trace_step(f.spec.id, "gate", t,
-                                 "Non-blocking check: data keeps flowing, downstream flagged stale/at-risk")
-        return inc
-
-    def _update_series(self, ingested: int, accepted: int, quarantined: int, blocked: int) -> None:
-        self.totals["rows_ingested"] += ingested
-        self.totals["rows_accepted"] += accepted
-        self.totals["rows_quarantined"] += quarantined
-        self.totals["rows_blocked"] += blocked
-        for key, value in (("tick", self.tick_no), ("score", round(self.platform_score(), 1)),
-                           ("ingested", ingested), ("accepted", accepted),
-                           ("quarantined", quarantined), ("blocked", blocked)):
-            self.series[key].append(value)
+    # -------------------------------------------------------------- scenarios
+    def inject(self, scenario_id: str) -> dict[str, str]:
+        """Apply a bad load: today if the table has not arrived yet, otherwise tomorrow."""
+        with self.lock:
+            sc = SCENARIOS_BY_ID[scenario_id]
+            st = self.tables[sc.table]
+            if st.arrived is None and st.status != "no_disponible":
+                self.bank._apply(sc.id, st.load, self.today)
+                st.scenario = sc.id
+                when = "hoy"
+            else:
+                self.queued[sc.table] = sc.id
+                when = "mañana"
+            self.log("warn", f"Anomalía simulada para {when}: {sc.title}.", sc.table)
+            return {"scenario": sc.id, "table": sc.table, "when": when}
 
     # -------------------------------------------------------------- read side
-    def platform_score(self) -> float:
-        scored = [d for d in catalog.DATASETS if d.layer in ("bronze", "silver", "gold")]
-        total = sum(d.weight for d in scored)
-        return sum(self.state[d.id].score * d.weight for d in scored) / total
-
-    def freshness_slo(self) -> float:
-        tier1 = [d.id for d in catalog.DATASETS if d.id in self.slo_window and d.criticality == "tier1"]
-        samples = [ok for d in tier1 for ok in self.slo_window[d]]
-        return 100.0 * sum(samples) / len(samples) if samples else 100.0
+    def table_summary(self, name: str) -> dict[str, Any]:
+        spec = BY_NAME[name]
+        st = self.tables[name]
+        normal = baseline(self.store.metric_history(name, "filas:base", self.today.isoformat(), 60), self.today,
+                          spec.load_type == "incremental")
+        spark = self.store.query(
+            "SELECT fecha, valor FROM metrics WHERE tabla = ? AND metrica = 'score' ORDER BY fecha DESC LIMIT 30",
+            (name,))
+        rules = [r for r in st.results if r.kind == "regla"]
+        return {
+            "name": name, "title": spec.title, "owner": spec.owner, "expected_at": spec.expected_hhmm,
+            "status": st.status, "status_label": STATUS_LABEL[st.status],
+            "arrived_at": hhmm(st.arrived) if st.arrived is not None else None,
+            "rows": len(st.load.rows) if st.arrived is not None else None,
+            "expected_rows": round(normal[0]) if normal else None,
+            "score": st.score,
+            "checks_total": len(st.results), "checks_ok": sum(1 for r in st.results if r.status == OK),
+            "rules_total": len(rules),
+            "failing": [r.name for r in st.results if r.status == FAIL],
+            "sparkline": [round(r["valor"], 1) for r in reversed(spark)],
+            "queued": self.queued.get(name),
+        }
 
     def incident_dict(self, inc: Incident, full: bool = False) -> dict[str, Any]:
-        tm = self.settings.tick_minutes
+        spec = BY_NAME[inc.table]
+        minutes = inc.minutes_open(self.now)
         data = {
-            "id": inc.id, "title": inc.title, "dataset": inc.dataset, "category": inc.category,
-            "category_label": runbooks.LABELS[inc.category], "severity": inc.severity, "status": inc.status,
-            "opened_tick": inc.opened_tick, "opened_at": self.sim_time(inc.opened_tick).strftime("%H:%M"),
-            "resolved_tick": inc.resolved_tick, "owner": catalog.get(inc.dataset).owner,
-            "mttd_minutes": inc.mttd_minutes(tm), "mttr_minutes": inc.mttr_minutes(tm),
-            "fault_ids": inc.fault_ids, "blocked_models": sorted(inc.blocked_models),
+            "id": inc.id, "table": inc.table, "table_title": spec.title, "title": inc.title,
+            "severity": inc.severity, "severity_label": SEVERITY_LABEL[inc.severity], "status": inc.status,
+            "opened_date": inc.opened[0], "opened_time": hhmm(inc.opened[1]), "owner": spec.owner,
+            "owner_email": spec.owner_email, "minutes_open": minutes, "loads_failed": inc.loads_failed,
+            "resolution": inc.resolution, "failing_checks": len(inc.checks), "simulated": inc.scenario is not None,
         }
         if full:
-            data |= {
-                "checks": inc.checks,
-                "symptoms": sorted(inc.symptoms),
-                "timeline": inc.timeline,
-                "blast_radius": [{"id": d.id, "name": d.name, "layer": d.layer, "criticality": d.criticality,
-                                  "owner": d.owner} for d in catalog.blast_radius(inc.dataset)],
-                "runbook": runbooks.RUNBOOKS[inc.category],
-            }
+            since = (date.fromisoformat(inc.opened[0]) - timedelta(days=30)).isoformat()
+            recurrence = self.store.scalar(
+                "SELECT COUNT(DISTINCT fecha) FROM check_results WHERE tabla = ? AND estado = 'falla' "
+                "AND fecha >= ? AND fecha < ?", (inc.table, since, inc.opened[0]))
+            data |= {"checks": inc.checks, "timeline": inc.timeline, "consumers": list(spec.consumers),
+                     "recurrence_30d": recurrence or 0}
         return data
-
-    def dataset_dict(self, dataset_id: str) -> dict[str, Any]:
-        d = catalog.get(dataset_id)
-        st = self.state[dataset_id]
-        age = self._age(dataset_id, self.sim_time()) if self.tick_no >= 0 else None
-        slo = self.slo_window.get(dataset_id)
-        return {
-            "id": d.id, "name": d.name, "layer": d.layer, "domain": d.domain, "owner": d.owner,
-            "criticality": d.criticality, "sla_minutes": d.sla_minutes, "description": d.description,
-            "upstream": list(d.upstream), "status": st.status, "score": round(st.score, 1),
-            "freshness_minutes": None if age is None else round(age, 1), "last_rows": st.last_rows,
-            "blocked": st.blocked, "checks": [c.to_dict() for c in st.checks],
-            "slo": None if not slo else round(100 * sum(slo) / len(slo), 2),
-        }
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            tm = self.settings.tick_minutes
-            incidents = sorted(self.incidents.values(), key=lambda i: (i.status == "resolved", -i.opened_tick))
-            resolved = [i for i in self.incidents.values() if i.status == "resolved"]
-            mttd = [m for i in self.incidents.values() if (m := i.mttd_minutes(tm)) is not None]
-            mttr = [m for i in resolved if (m := i.mttr_minutes(tm)) is not None]
-            datasets = [self.dataset_dict(d.id) for d in catalog.DATASETS]
-            run_cost = sum(task["cost_usd"] for task in self.last_run)
+            tables = [self.table_summary(t.name) for t in TABLES]
+            evaluated = [t for t in tables if t["score"] is not None]
+            all_results = [r for st in self.tables.values() for r in st.results]
+            resolved = [i for i in self.incidents.values() if i.resolved is not None]
+            still_open = sorted((i for i in self.incidents.values() if i.resolved is None),
+                                key=lambda i: i.opened, reverse=True)
+            open_first = still_open + sorted(resolved, key=lambda i: i.resolved, reverse=True)
+            series = self.store.query(
+                "SELECT fecha, ROUND(valor, 1) AS score FROM metrics WHERE tabla = '_global' AND metrica = 'score' "
+                "ORDER BY fecha DESC LIMIT 60")[::-1]
+            mttr = [i.minutes_open(self.now) for i in resolved]
             return {
-                "tick": self.tick_no,
-                "sim_time": self.sim_time().isoformat() if self.tick_no >= 0 else None,
-                "running": self.running, "speed": self.speed, "chaos": self.chaos,
-                "platform": {
-                    "score": round(self.platform_score(), 1),
-                    "freshness_slo": round(self.freshness_slo(), 2),
-                    "open_incidents": sum(1 for i in self.incidents.values() if i.status != "resolved"),
-                    "datasets_healthy": sum(1 for d in datasets if d["status"] == "healthy"),
-                    "datasets_total": len(datasets),
-                    "mttd_minutes": round(sum(mttd) / len(mttd), 1) if mttd else None,
-                    "mttr_minutes": round(sum(mttr) / len(mttr), 1) if mttr else None,
-                    "rows_ingested": self.totals["rows_ingested"],
-                    "rows_quarantined": self.totals["rows_quarantined"],
-                    "rows_blocked": self.totals["rows_blocked"],
-                    "run_cost_usd": round(run_cost, 4),
-                    "daily_cost_usd": round(run_cost * 24 * 60 / tm, 2),
-                    "tick_ms": round(self.last_tick_ms, 1),
+                "date": self.today.isoformat(), "weekday": DAYS_ES[self.today.weekday()], "time": hhmm(self.minute),
+                "day_progress": round((self.minute - DAY_START) / (DAY_END - DAY_START), 3),
+                "running": self.running, "speed": self.speed, "random_anomalies": self.random_anomalies,
+                "kpis": {
+                    "score": round(statistics.fmean(t["score"] for t in evaluated), 1) if evaluated else None,
+                    "tables_total": len(tables),
+                    "tables_arrived": sum(1 for t in tables if t["arrived_at"]),
+                    "tables_ok": sum(1 for t in tables if t["status"] == "ok"),
+                    "tables_missing": sum(1 for t in tables if t["status"] == "no_disponible"),
+                    "open_incidents": sum(1 for i in self.incidents.values() if i.resolved is None),
+                    "checks_today": len(all_results),
+                    "checks_failed": sum(1 for r in all_results if r.status == FAIL),
+                    "rows_today": sum(t["rows"] or 0 for t in tables),
+                    "mttr_hours": round(statistics.fmean(mttr) / 60, 1) if mttr else None,
                 },
-                "datasets": datasets,
-                "edges": catalog.edges(),
-                "incidents": [self.incident_dict(i) for i in incidents[:25]],
-                "faults": [{"id": f.id, "name": f.name, "description": f.description, "target": f.target,
-                            "detected_on": f.detected_on, "root_cause": f.root_cause,
-                            "active": f.id in self.active_faults} for f in FAULTS],
-                "traces": [{**tr, "steps": {k: (self.sim_time(v).strftime("%H:%M"), v)
-                                            for k, v in tr["steps"].items()}} for tr in self.traces],
-                "dag": self.last_run,
-                "series": {k: list(v) for k, v in self.series.items()},
+                "tables": tables,
+                "incidents": [self.incident_dict(i) for i in open_first[:40]],
                 "events": list(self.events)[:40],
+                "scenarios": [{"id": s.id, "title": s.title, "description": s.description, "table": s.table,
+                               "queued": self.queued.get(s.table) == s.id} for s in SCENARIOS],
+                "score_series": series,
             }
+
+    def table_detail(self, name: str) -> dict[str, Any]:
+        with self.lock:
+            spec = BY_NAME[name]
+            st = self.tables[name]
+            volume = self.store.query(
+                """SELECT fecha,
+                          MAX(CASE WHEN metrica = 'filas' THEN valor END)    AS filas,
+                          MAX(CASE WHEN metrica = 'filas:lo' THEN valor END) AS lo,
+                          MAX(CASE WHEN metrica = 'filas:hi' THEN valor END) AS hi
+                   FROM metrics WHERE tabla = ? AND metrica IN ('filas', 'filas:lo', 'filas:hi')
+                   GROUP BY fecha ORDER BY fecha DESC LIMIT 60""", (name,))[::-1]
+            scores = self.store.query(
+                "SELECT fecha, ROUND(valor, 1) AS score FROM metrics WHERE tabla = ? AND metrica = 'score' "
+                "ORDER BY fecha DESC LIMIT 60", (name,))[::-1]
+            days = [r["fecha"] for r in self.store.query(
+                "SELECT DISTINCT fecha FROM check_results WHERE tabla = ? ORDER BY fecha DESC LIMIT 30", (name,))][::-1]
+            heat: dict[str, dict] = {}
+            if days:
+                for r in self.store.query(
+                        "SELECT fecha, check_id, nombre, estado FROM check_results WHERE tabla = ? AND fecha >= ?",
+                        (name, days[0])):
+                    row = heat.setdefault(r["check_id"], {"check_id": r["check_id"], "name": r["nombre"], "days": {}})
+                    row["days"][r["fecha"]] = r["estado"]
+            outliers = {}
+            for rule in self.rules.for_table(name):
+                if rule.type == "outlier":
+                    key = f"rule:{rule.id}"
+                    outliers[rule.id] = {"name": rule.describe(), "points": self.store.query(
+                        """SELECT fecha,
+                                  MAX(CASE WHEN metrica = ? THEN valor END) AS valor,
+                                  MAX(CASE WHEN metrica = ? THEN valor END) AS lo,
+                                  MAX(CASE WHEN metrica = ? THEN valor END) AS hi
+                           FROM metrics WHERE tabla = ? AND metrica IN (?, ?, ?)
+                           GROUP BY fecha ORDER BY fecha DESC LIMIT 60""",
+                        (key, key + ":lo", key + ":hi", name, key, key + ":lo", key + ":hi"))[::-1]}
+            return {
+                "spec": spec.to_dict(), "summary": self.table_summary(name),
+                "results": [r.to_dict() for r in st.results],
+                "volume": volume, "scores": scores, "outliers": outliers,
+                "heatmap": {"days": days, "rows": list(heat.values())},
+                "profile": self.profile(name) if st.arrived is not None else [],
+            }
+
+    def profile(self, name: str) -> list[dict[str, Any]]:
+        """Column profile of today's load: nulls, distinct values, min / max / mean."""
+        spec = BY_NAME[name]
+        iso = self.today.isoformat()
+        parts = []
+        for c in spec.columns:
+            parts.append(f"SUM(CASE WHEN {c.name} IS NULL THEN 1 ELSE 0 END) AS \"{c.name}__nulos\"")
+            parts.append(f"COUNT(DISTINCT {c.name}) AS \"{c.name}__distintos\"")
+            if c.type in ("entero", "decimal"):
+                parts += [f"MIN({c.name}) AS \"{c.name}__min\"", f"MAX({c.name}) AS \"{c.name}__max\"",
+                          f"AVG({c.name}) AS \"{c.name}__prom\""]
+        row = self.store.query(f"SELECT COUNT(*) AS n, {', '.join(parts)} FROM t_{name} WHERE _fecha_carga = ?",
+                               (iso,))[0]
+        n = row["n"] or 0
+        out = []
+        for c in spec.columns:
+            nulls = row[f"{c.name}__nulos"] or 0
+            out.append({
+                "column": c.name, "type": c.type, "description": c.description,
+                "null_pct": round(100 * nulls / n, 2) if n else None,
+                "distinct": row[f"{c.name}__distintos"],
+                "min": row.get(f"{c.name}__min"), "max": row.get(f"{c.name}__max"),
+                "mean": round(row[f"{c.name}__prom"], 2) if row.get(f"{c.name}__prom") is not None else None,
+            })
+        return out
+
+    def preview_rule(self, rule) -> dict[str, Any]:
+        """Evaluate a rule against the latest available load of its table without saving it."""
+        with self.lock:
+            latest = self.store.scalar(f"SELECT MAX(_fecha_carga) FROM t_{rule.table}")
+            if latest is None:
+                raise ValueError("No hay cargas recientes de esta tabla para probar la regla")
+            day = date.fromisoformat(latest)
+            total = self.store.scalar(f"SELECT COUNT(*) FROM t_{rule.table} WHERE _fecha_carga = ?", (latest,))
+            if rule.type == "outlier":  # needs history: report today's value, evaluation starts with the next load
+                value = self.store.scalar(rule.sql(), {"fecha": latest}) or 0
+                result = CheckResult(rule.table, "preview", rule.describe(), "regla", rule.severity, OK,
+                                     f"Valor del {latest}: {value:,.2f}. Se comparará contra su histórico desde "
+                                     "la próxima carga.", value=value, total_rows=total, sql=rule.sql())
+            else:
+                result = evaluate(rule, self.store, day, total)
+            return {"date": latest, **result.to_dict()}

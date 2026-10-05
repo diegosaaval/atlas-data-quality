@@ -1,12 +1,8 @@
-"""AI Incident Copilot.
+"""Copiloto de incidentes: redacta el diagnóstico y el correo de escalamiento.
 
-Design rule: deterministic checks decide whether data is good; the copilot only
-explains. It receives the evidence ATLAS already collected (checks, lineage,
-quarantine reasons, runbook, history) and turns it into a briefing.
-
-Two backends:
-* rules  (default) — template-based, offline, instant, fully testable.
-* claude (opt-in)  — used when ANTHROPIC_API_KEY is set; falls back to rules on any error.
+Regla de diseño: los controles determinísticos deciden si un dato está bien o mal; el
+copiloto solo explica y redacta. Por defecto usa plantillas (sin internet, instantáneo,
+probado). Si existe ANTHROPIC_API_KEY usa Claude y, ante cualquier error, vuelve a plantillas.
 """
 
 from __future__ import annotations
@@ -14,92 +10,113 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections import Counter
 from typing import Any
 
-from . import catalog
 from .engine import Engine
 
 log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the incident copilot of ATLAS, a data reliability platform for a bank.
-You receive evidence that deterministic checks already collected. Do not contradict the check
-results or the classified root cause; explain them. Be concise and specific: cite check names,
-values and dataset ids from the evidence. Never invent datasets, numbers or owners."""
+CAUSES = {
+    "disponibilidad": ("El proceso de carga no se ejecutó o terminó con error.",
+                       "Revisar el log del proceso de carga, re-ejecutarlo y confirmar la hora de publicación."),
+    "volumen_bajo": ("Carga incompleta: el archivo llegó cortado o la ingesta fue borrada/truncada.",
+                     "Validar el archivo fuente contra el conteo esperado y recargar la tabla completa."),
+    "volumen_alto": ("El archivo se procesó más de una vez o trae información de varios días.",
+                     "Identificar la ejecución duplicada, depurar la carga y volver a validar."),
+    "estructura": ("Cambio en el sistema fuente: el archivo trae columnas diferentes a las acordadas.",
+                   "Confirmar el cambio con el dueño del sistema fuente y ajustar el mapeo antes de recargar."),
+    "unico": ("El proceso se re-ejecutó sin controlar duplicados (la carga no es idempotente).",
+              "Eliminar los registros repetidos y asegurar que una re-ejecución reemplace en vez de agregar."),
+    "fecha_del_dia": ("Se cargó un archivo de una fecha anterior (archivo de ayer reprocesado).",
+                      "Ubicar el archivo del día correcto y recargar la tabla."),
+    "no_nulos": ("Campo no diligenciado en el origen o error de mapeo en la carga.",
+                 "Revisar el mapeo de la columna y completar los registros vacíos en el origen."),
+    "rango": ("Valores imposibles para el negocio: error de cálculo o de unidades en el origen.",
+              "Revisar la fórmula/unidades en el sistema fuente y corregir los registros señalados."),
+    "comparacion": ("Inconsistencia entre columnas: error de cálculo en el origen.",
+                    "Revisar el cálculo en el sistema fuente para los registros de ejemplo."),
+    "valores_permitidos": ("Aparece un valor nuevo que no está homologado en el catálogo.",
+                           "Confirmar si es un valor válido nuevo (y actualizar el catálogo) o un error de origen."),
+    "outlier": ("Valor atípico frente al histórico: posible error de unidades o un evento de negocio real.",
+                "Confirmar con el negocio si hubo un evento (campaña, cierre); si no, revisar unidades y recargar."),
+    "sql": ("Los datos incumplen una regla de negocio definida por el área.",
+            "Revisar los registros de ejemplo con el dueño de la regla."),
+}
+
+SYSTEM_PROMPT = """Eres el copiloto de calidad de datos de ATLAS en un banco colombiano.
+Recibes la evidencia que los controles automáticos ya recolectaron. No contradigas los resultados
+de los controles ni inventes datos, cifras, tablas o personas. Escribe en español, claro y breve,
+para un equipo de negocio o de TI. Cita las reglas y valores de la evidencia."""
 
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string"},
-        "probable_root_cause": {"type": "string"},
-        "evidence": {"type": "array", "items": {"type": "string"}},
-        "affected_assets": {"type": "array", "items": {"type": "string"}},
-        "remediation_steps": {"type": "array", "items": {"type": "string"}},
-        "stakeholder_update": {"type": "string"},
+        "asunto": {"type": "string"},
+        "cuerpo": {"type": "string"},
+        "causa_probable": {"type": "string"},
+        "acciones": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["summary", "probable_root_cause", "evidence", "affected_assets",
-                 "remediation_steps", "stakeholder_update"],
+    "required": ["asunto", "cuerpo", "causa_probable", "acciones"],
     "additionalProperties": False,
 }
 
 
+def _fmt(value: Any) -> str:
+    """Números legibles en formato colombiano: 549.730.001 · -7,73."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "NULL" if value is None else str(value)
+    if float(value).is_integer():
+        return f"{value:,.0f}".replace(",", ".")
+    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _cause_key(check: dict[str, Any]) -> str:
+    kind = check.get("rule_type") or check["check_id"]
+    if kind == "volumen":
+        return "volumen_bajo" if "menos" in check["message"] or "vacía" in check["message"] else "volumen_alto"
+    return kind if kind in CAUSES else "sql"
+
+
 def build_context(engine: Engine, incident_id: str) -> dict[str, Any]:
     with engine.lock:
-        inc = engine.incidents[incident_id]
-        data = engine.incident_dict(inc, full=True)
-        reasons = Counter()
-        for row in engine.wh.query(
-            "SELECT reasons FROM quarantine WHERE tick >= ? ORDER BY tick DESC LIMIT 500",
-            (inc.opened_tick - 2,),
-        ):
-            for reason in json.loads(row["reasons"]):
-                reasons[reason] += 1
-        recent_errors = [t for t in engine.last_run if t["status"] in ("failed", "no_data", "blocked")]
-        similar = [i for i in engine.incidents.values()
-                   if i.category == inc.category and i.id != inc.id and i.status == "resolved"]
-        tm = engine.settings.tick_minutes
-        mttrs = [m for i in similar if (m := i.mttr_minutes(tm)) is not None]
-        return {
-            "incident": data,
-            "upstream": sorted(catalog.ancestors(inc.dataset)),
-            "top_quarantine_reasons": reasons.most_common(5),
-            "pipeline_task_issues": recent_errors,
-            "history": {"similar_resolved": len(similar),
-                        "avg_mttr_minutes": round(sum(mttrs) / len(mttrs), 1) if mttrs else None},
-        }
+        return engine.incident_dict(engine.incidents[incident_id], full=True)
 
 
-def rules_analysis(ctx: dict[str, Any]) -> dict[str, Any]:
-    inc = ctx["incident"]
+def template_analysis(inc: dict[str, Any]) -> dict[str, Any]:
     main = inc["checks"][0] if inc["checks"] else None
-    evidence = [f"{c['dataset']}.{c['name']} = {c['value']} ({c['message']})" for c in inc["checks"]]
-    evidence += [f"Symptom downstream: {s}" for s in inc["symptoms"][:4]]
-    evidence += [f"Quarantine reason ×{n}: {r}" for r, n in ctx["top_quarantine_reasons"][:3]]
-    evidence += [f"Task {t['task']} → {t['status']}: {t['note']}" for t in ctx["pipeline_task_issues"][:3] if t["note"]]
-
-    radius = inc["blast_radius"]
-    tier1 = [d["id"] for d in radius if d["criticality"] == "tier1"]
-    gate = (f"The quality gate held back {', '.join(inc['blocked_models'])}, so consumers keep the last good version."
-            if inc["blocked_models"] else "No gold model was blocked; downstream assets may be stale or at risk.")
-    history = ctx["history"]
-    hist = (f" Seen {history['similar_resolved']} time(s) before; average MTTR {history['avg_mttr_minutes']} min."
-            if history["similar_resolved"] else " First occurrence of this failure mode.")
+    cause, action = CAUSES[_cause_key(main)] if main else ("Sin controles fallidos.", "Validar manualmente.")
+    actions = [action] + [CAUSES[_cause_key(c)][1] for c in inc["checks"][1:] if CAUSES[_cause_key(c)][1] != action]
+    findings = "\n".join(f"  • {c['name']}: {c['message']}" for c in inc["checks"])
+    examples = ""
+    if main and main.get("examples"):
+        sample = main["examples"][:3]
+        examples = "\nEjemplos de registros afectados:\n" + "\n".join(
+            "  - " + ", ".join(f"{k}={_fmt(v)}" for k, v in row.items()) for row in sample) + "\n"
+    recurrence = (f"\nEs la {inc['recurrence_30d'] + 1}.ª vez que esta tabla presenta fallas en los últimos 30 días."
+                  if inc["recurrence_30d"] else "")
+    body = (
+        f"Hola equipo {inc['owner']},\n\n"
+        f"El monitor de calidad ATLAS detectó un problema en la tabla {inc['table']} ({inc['table_title']}) "
+        f"en la carga del {inc['opened_date']} a las {inc['opened_time']}. Severidad: {inc['severity_label']}.\n\n"
+        f"Qué encontramos:\n{findings}\n{examples}\n"
+        f"Posible causa: {cause}\n\n"
+        f"Impacto: alimenta {', '.join(inc['consumers'])}.{recurrence}\n\n"
+        f"Acción solicitada: {action}\n\n"
+        "Quedamos atentos a su confirmación. El incidente se cerrará automáticamente cuando la siguiente "
+        "carga cumpla todos los controles.\n\n"
+        "Equipo de Calidad de Datos · ATLAS"
+    )
     return {
-        "mode": "rules",
-        "summary": f"{inc['category_label']} detected on {inc['dataset']} at {inc['opened_at']}. {gate}{hist}",
-        "probable_root_cause": (f"{inc['category_label']}: {main['message']}" if main else inc["category_label"]),
-        "evidence": evidence,
-        "affected_assets": [d["id"] for d in radius],
-        "remediation_steps": inc["runbook"]["steps"],
-        "stakeholder_update": (
-            f"[{inc['severity']}] {inc['category_label']} on {inc['dataset']}. "
-            f"{len(radius)} downstream assets affected ({len(tier1)} tier-1: {', '.join(tier1[:3]) or 'none'}). "
-            f"Owner: {inc['owner']}. {gate}"
-        ),
+        "mode": "plantilla",
+        "to": inc["owner_email"],
+        "asunto": f"[ATLAS][{inc['severity_label']}] {inc['table']}: {inc['title']} ({inc['opened_date']})",
+        "cuerpo": body,
+        "causa_probable": cause,
+        "acciones": actions,
     }
 
 
-def claude_analysis(ctx: dict[str, Any], model: str) -> dict[str, Any]:
+def claude_analysis(inc: dict[str, Any], model: str) -> dict[str, Any]:
     import anthropic
 
     client = anthropic.Anthropic()
@@ -110,24 +127,25 @@ def claude_analysis(ctx: dict[str, Any], model: str) -> dict[str, Any]:
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
         betas=["server-side-fallback-2026-07-01"],
         extra_body={"fallbacks": "default"},
-        messages=[{"role": "user", "content": "Incident evidence (JSON):\n" + json.dumps(ctx, default=str)}],
+        messages=[{"role": "user", "content": "Redacta el correo de escalamiento para este incidente. Evidencia (JSON):\n"
+                   + json.dumps(inc, ensure_ascii=False, default=str)}],
     )
     if response.stop_reason == "refusal":
-        raise RuntimeError("model declined the request")
+        raise RuntimeError("el modelo rechazó la solicitud")
     text = next(b.text for b in response.content if b.type == "text")
-    return {"mode": "claude", "model": response.model, **json.loads(text)}
+    return {"mode": "claude", "model": response.model, "to": inc["owner_email"], **json.loads(text)}
 
 
 def analyze(engine: Engine, incident_id: str, use_llm: bool | None = None) -> dict[str, Any]:
-    ctx = build_context(engine, incident_id)
+    inc = build_context(engine, incident_id)
     if use_llm is None:
         use_llm = bool(os.getenv("ANTHROPIC_API_KEY"))
     if use_llm:
         try:
-            return claude_analysis(ctx, engine.settings.copilot_model)
-        except Exception as exc:  # the copilot must never break incident response
-            log.warning("Claude copilot unavailable, falling back to rules: %s", exc)
-            result = rules_analysis(ctx)
+            return claude_analysis(inc, engine.settings.copilot_model)
+        except Exception as exc:  # el copiloto nunca debe frenar la gestión del incidente
+            log.warning("Copiloto con Claude no disponible, uso plantilla: %s", exc)
+            result = template_analysis(inc)
             result["fallback_reason"] = str(exc)[:200]
             return result
-    return rules_analysis(ctx)
+    return template_analysis(inc)

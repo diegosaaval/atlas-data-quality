@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ATLAS ONE</title>
-  <meta name="description" content="Live data reliability platform for financial data: quality gates, lineage, incidents and a Failure Lab.">
+  <title>ATLAS · Calidad de datos</title>
+  <meta name="description" content="Monitor de calidad de datos: valida las tablas que se cargan cada día, detecta anomalías y gestiona incidentes.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232a78d6'/><path d='M9 23 16 8l7 15M12 18h8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -12,167 +12,146 @@
   <header class="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">A</span>
-      <span class="brand-name">ATLAS <b>ONE</b></span>
-      <span class="live" id="live" title="Live connection"><i></i><span id="clock">connecting…</span></span>
+      <span class="brand-name">ATLAS <span class="muted">· Calidad de datos</span></span>
     </div>
     <nav class="tabs" role="tablist">
-      <button data-view="overview" class="active">Overview<kbd>1</kbd></button>
-      <button data-view="lineage">Lineage<kbd>2</kbd></button>
-      <button data-view="lab">Failure Lab<kbd>3</kbd></button>
-      <button data-view="incidents">Incidents<span class="badge" id="inc-badge" hidden></span><kbd>4</kbd></button>
-      <button data-view="contracts">Contracts<kbd>5</kbd></button>
-      <button data-view="risk">Risk signals<kbd>6</kbd></button>
+      <button data-view="resumen" class="active">Resumen</button>
+      <button data-view="tablas">Tablas</button>
+      <button data-view="incidentes">Incidentes<span class="badge" id="inc-badge" hidden></span></button>
+      <button data-view="reglas">Reglas</button>
     </nav>
     <div class="controls">
-      <button class="icon-btn" id="btn-play" title="Pause / resume (space)">❚❚</button>
-      <select id="speed" title="Simulation speed">
-        <option value="0.5">0.5×</option><option value="1" selected>1×</option>
-        <option value="2">2×</option><option value="5">5×</option>
+      <span class="clock" id="clock" title="Fecha y hora simuladas"><i></i><span>conectando…</span></span>
+      <button class="icon-btn" id="btn-play" title="Pausar / continuar (espacio)">❚❚</button>
+      <select id="speed" title="Velocidad de la simulación">
+        <option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
       </select>
-      <label class="switch" title="Chaos mode: random faults that auto-heal"><input type="checkbox" id="chaos"><span>Chaos</span></label>
-      <select id="role" title="Role (RBAC + PII masking)">
-        <option value="viewer">viewer</option><option value="engineer" selected>engineer</option><option value="admin">admin</option>
-      </select>
-      <button class="icon-btn" id="btn-theme" title="Toggle theme (t)">◐</button>
-      <button class="btn primary" id="btn-demo" title="2-minute guided demo (d)">▶ Demo</button>
-      <button class="btn ghost" id="btn-about">About</button>
+      <button class="btn" id="btn-anomaly" title="Simular una carga con problemas">⚡ Simular anomalía</button>
+      <button class="btn primary" id="btn-demo" title="Recorrido guiado de 2 minutos">▶ Demo</button>
+      <button class="icon-btn" id="btn-theme" title="Cambiar tema">◐</button>
+      <button class="icon-btn" id="btn-about" title="¿Qué es ATLAS?">?</button>
     </div>
   </header>
 
   <main>
-    <!-- OVERVIEW -------------------------------------------------------- -->
-    <section class="view active" data-view="overview">
-      <div class="hero">
-        <div class="card score-card" id="score-card"></div>
-        <div class="kpis" id="kpis"></div>
-      </div>
+    <!-- RESUMEN ----------------------------------------------------------- -->
+    <section class="view active" data-view="resumen">
+      <div class="card today" id="today"></div>
+      <div class="kpis" id="kpis"></div>
+      <div class="cards" id="table-cards"></div>
       <div class="grid-2">
         <div class="card">
-          <div class="card-head"><h3>Platform reliability score</h3><span class="muted small">last 180 runs · 5 min each</span></div>
-          <div class="chart" id="chart-score"></div>
+          <div class="card-head"><h3>Puntaje de calidad · últimos 60 días</h3><span class="muted small">promedio de las 6 tablas</span></div>
+          <div class="chart" id="chart-global"></div>
         </div>
         <div class="card">
-          <div class="card-head"><h3>Rows per run</h3>
-            <span class="legend"><i style="background:var(--series-1)"></i>accepted <i style="background:var(--series-2)"></i>quarantined</span></div>
-          <div class="chart" id="chart-throughput"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h3>Datasets</h3><span class="muted small">click a row for checks, history and SQL</span></div>
-        <div class="table-wrap"><table class="table" id="datasets-table"></table></div>
-      </div>
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-head"><h3>Last pipeline run</h3><span class="muted small" id="dag-meta"></span></div>
-          <div class="dag" id="dag"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Live events</h3></div>
+          <div class="card-head"><h3>Actividad en vivo</h3></div>
           <ul class="events" id="events"></ul>
         </div>
       </div>
     </section>
 
-    <!-- LINEAGE --------------------------------------------------------- -->
-    <section class="view" data-view="lineage">
-      <div class="card">
-        <div class="card-head">
-          <h3>Lineage &amp; blast radius</h3>
-          <span class="legend">
-            <span class="st st-healthy">healthy</span><span class="st st-warning">warning</span>
-            <span class="st st-critical">critical</span><span class="st st-blocked">blocked by gate</span>
-          </span>
+    <!-- TABLAS ------------------------------------------------------------ -->
+    <section class="view" data-view="tablas">
+      <div class="table-picker" id="table-picker"></div>
+      <div id="table-detail"></div>
+    </section>
+
+    <!-- INCIDENTES -------------------------------------------------------- -->
+    <section class="view" data-view="incidentes">
+      <div class="split">
+        <div class="card list-card">
+          <div class="seg" id="inc-filter">
+            <button data-f="activos" class="active">Activos</button><button data-f="resuelto">Resueltos</button><button data-f="todos">Todos</button>
+          </div>
+          <ul class="inc-list" id="inc-list"></ul>
         </div>
-        <p class="muted small">Hover a node to trace its upstream and downstream. Dashed red edges are held back by the quality gate.</p>
-        <div class="lineage" id="lineage"></div>
+        <div class="card" id="inc-detail"><p class="muted">Selecciona un incidente.</p></div>
       </div>
     </section>
 
-    <!-- FAILURE LAB ----------------------------------------------------- -->
-    <section class="view" data-view="lab">
-      <div class="lab">
-        <div>
-          <div class="card-head"><h3>Inject a production failure</h3>
-            <label class="switch small"><input type="checkbox" id="autoheal"><span>auto-heal after 8 runs</span></label></div>
-          <p class="muted small">Each fault is a real failure mode seen in banking data platforms. Inject one and watch ATLAS detect, contain and recover.</p>
-          <div class="faults" id="faults"></div>
+    <!-- REGLAS ------------------------------------------------------------ -->
+    <section class="view" data-view="reglas">
+      <div class="rules-layout">
+        <div class="card">
+          <div class="card-head">
+            <h3>Reglas de calidad</h3>
+            <select id="rules-filter"><option value="">Todas las tablas</option></select>
+          </div>
+          <p class="muted small">Además de estas reglas, cada tabla tiene 3 monitores automáticos: <b>disponibilidad</b>, <b>volumen</b> y <b>estructura</b>. Los cambios aplican desde la próxima carga.</p>
+          <div class="table-wrap"><table class="table" id="rules-table"></table></div>
         </div>
         <div class="card sticky">
-          <div class="card-head"><h3>Detection timeline</h3><span class="muted small" id="trace-name"></span></div>
-          <ol class="stepper" id="stepper"></ol>
+          <h3>Nueva regla</h3>
+          <form id="rule-form" autocomplete="off">
+            <label>Tabla<select name="table" id="rf-table"></select></label>
+            <label>Tipo de regla<select name="type" id="rf-type"></select></label>
+            <div id="rf-params"></div>
+            <label>Severidad<select name="severity" id="rf-severity"></select></label>
+            <label>Nota (por qué importa)<input name="note" maxlength="300" placeholder="Ej.: una tasa de mora nunca puede ser negativa"></label>
+            <div class="actions">
+              <button type="button" class="btn" id="rf-preview">Probar con la última carga</button>
+              <button type="submit" class="btn primary">Guardar regla</button>
+            </div>
+          </form>
+          <div id="rf-result"></div>
         </div>
-      </div>
-    </section>
-
-    <!-- INCIDENTS ------------------------------------------------------- -->
-    <section class="view" data-view="incidents">
-      <div class="split">
-        <div class="card list-card"><div class="card-head"><h3>Incidents</h3></div><ul class="inc-list" id="inc-list"></ul></div>
-        <div class="card" id="inc-detail"><p class="muted">Select an incident.</p></div>
-      </div>
-    </section>
-
-    <!-- CONTRACTS ------------------------------------------------------- -->
-    <section class="view" data-view="contracts">
-      <p class="muted small intro">Data contracts are versioned YAML files agreed between producers and the platform. They drive schema drift detection, record validation, quarantine and PII masking.</p>
-      <div class="contracts" id="contracts"></div>
-    </section>
-
-    <!-- RISK ------------------------------------------------------------ -->
-    <section class="view" data-view="risk">
-      <div class="card">
-        <div class="card-head"><h3>Top fraud risk signals</h3><span class="muted small" id="risk-meta"></span></div>
-        <p class="muted small">Features from <code>gold.fraud_features</code> (1h window) consumed by <code>ml.fraud_scoring</code>. PII is masked according to your role.</p>
-        <div class="table-wrap"><table class="table" id="risk-table"></table></div>
       </div>
     </section>
   </main>
 
-  <aside class="drawer" id="drawer" aria-hidden="true">
-    <button class="icon-btn close" id="drawer-close" title="Close (Esc)">✕</button>
-    <div id="drawer-body"></div>
-  </aside>
+  <div class="modal" id="anomaly-modal" hidden>
+    <div class="modal-card">
+      <button class="icon-btn close" data-close>✕</button>
+      <h2>Simular una anomalía</h2>
+      <p class="muted">Elige un problema típico de las cargas. Si la tabla aún no ha llegado hoy, se aplica hoy; si ya llegó, en la carga de mañana.</p>
+      <div class="scenarios" id="scenarios"></div>
+    </div>
+  </div>
+
+  <div class="modal" id="about" hidden>
+    <div class="modal-card wide">
+      <button class="icon-btn close" data-close>✕</button>
+      <h2>¿Qué es ATLAS?</h2>
+      <p class="lead">Un monitor de <b>calidad de datos</b> para las tablas que TI carga cada día. No mueve datos: los <b>vigila</b>.</p>
+      <div class="about-grid">
+        <div>
+          <h4>El problema</h4>
+          <p>Las áreas de negocio usan tablas que otro equipo carga cada mañana. Cuando una carga llega duplicada, vacía, tarde o con valores imposibles, normalmente alguien se entera tarde: cuando el reporte ya salió mal.</p>
+          <h4>Qué hace ATLAS cada mañana</h4>
+          <ol>
+            <li><b>¿Llegó?</b> Vigila la hora acordada de cada tabla y alerta si no aparece.</li>
+            <li><b>¿Llegó completa?</b> Compara el número de registros con lo normal para ese día de la semana.</li>
+            <li><b>¿Está bien?</b> Duplicados, vacíos, rangos, valores permitidos y reglas de negocio (ej. <i>tasa de mora ≥ 0</i>).</li>
+            <li><b>¿Es normal?</b> Detecta valores atípicos con desviación estándar frente al histórico.</li>
+            <li><b>¿Quién lo arregla?</b> Abre un incidente con evidencia, ejemplos y el correo para el equipo responsable. Se cierra solo cuando la siguiente carga está bien.</li>
+          </ol>
+        </div>
+        <div>
+          <h4>Glosario</h4>
+          <dl class="glossary">
+            <dt>Monitor automático</dt><dd>Control que toda tabla tiene sin configurar nada: disponibilidad, volumen y estructura.</dd>
+            <dt>Regla de calidad</dt><dd>Condición definida por el negocio que los datos deben cumplir. Cada una se convierte en una consulta SQL.</dd>
+            <dt>Outlier (valor atípico)</dt><dd>Valor que se aleja más de N desviaciones estándar (σ) de su comportamiento normal.</dd>
+            <dt>Banda de normalidad</dt><dd>Rango esperado calculado con la mediana y la desviación de los días comparables.</dd>
+            <dt>Puntaje de calidad</dt><dd>% de controles que pasan, ponderado por severidad (crítica pesa 4, baja pesa 1).</dd>
+            <dt>Incidente</dt><dd>Un caso por tabla con fallas: agrupa todos sus controles fallidos para no generar ruido.</dd>
+          </dl>
+          <h4>Tecnología</h4>
+          <p class="chips"><span>Python</span><span>SQL</span><span>FastAPI</span><span>SQLite</span><span>WebSocket</span><span>Docker</span><span>pytest</span><span>GitHub Actions</span><span>Claude (opcional)</span></p>
+          <p><a id="gh-link" href="#" target="_blank" rel="noopener">Código en GitHub ↗</a> · <a href="/docs" target="_blank">API ↗</a></p>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="tour" id="tour" hidden>
     <div class="tour-progress"><i id="tour-bar"></i></div>
     <p id="tour-text"></p>
-    <button class="btn ghost small" id="tour-skip">Skip</button>
+    <button class="btn ghost small" id="tour-skip">Salir</button>
   </div>
-
   <div class="tooltip" id="tooltip" hidden></div>
   <div class="toast" id="toast" hidden></div>
-
-  <dialog id="about">
-    <form method="dialog"><button class="icon-btn close">✕</button></form>
-    <h2>ATLAS ONE</h2>
-    <p class="lead">A production-style reference implementation of a <b>data reliability platform</b> for financial data.</p>
-    <div class="about-grid">
-      <div>
-        <h4>The problem</h4>
-        <p>In banks and fintechs, bad data is expensive: a duplicated batch inflates a ledger, a silent schema change breaks a regulatory report, a late partition starves a fraud model. Usually someone downstream finds out first.</p>
-        <h4>What ATLAS does</h4>
-        <ul>
-          <li><b>Detects</b> issues with deterministic checks: freshness, volume, schema contracts, nulls, duplicates, referential integrity, replica reconciliation and distribution drift.</li>
-          <li><b>Contains</b> them with a lineage-aware quality gate: bad data never reaches gold, consumers keep the last good version.</li>
-          <li><b>Explains</b> them: root cause, blast radius, owners, runbook and an AI copilot briefing.</li>
-          <li><b>Recovers</b>: backfills late partitions and tracks MTTD / MTTR.</li>
-        </ul>
-      </div>
-      <div>
-        <h4>Architecture</h4>
-        <pre class="arch">sources ─▶ bronze ─▶ silver ─▶ quality gate ─▶ gold ─▶ consumers
-            │          │ contracts · dedup · RI · FX
-            └──────────┴─▶ reliability engine ─▶ incidents ─▶ copilot
-                                 │
-                 FastAPI · WebSocket · Prometheus · OpenLineage</pre>
-        <h4>Stack</h4>
-        <p class="chips"><span>Python 3.12</span><span>FastAPI</span><span>SQL (SQLite → Databricks/Athena)</span><span>WebSocket</span><span>Data contracts (YAML)</span><span>Prometheus</span><span>OpenLineage</span><span>Claude API</span><span>Docker</span><span>GitHub Actions</span><span>pytest</span></p>
-        <h4>Honest scope</h4>
-        <p class="muted">A reference implementation, not a replacement for a production platform. The synthetic sources and SQLite engine keep it runnable anywhere; the design maps 1:1 to S3 + Databricks/Delta + Airflow (see docs/adr).</p>
-        <p><a id="gh-link" href="#" target="_blank" rel="noopener">Source code on GitHub ↗</a> · <a href="/docs" target="_blank">API docs ↗</a> · <a href="/metrics" target="_blank">Metrics ↗</a></p>
-      </div>
-    </div>
-  </dialog>
 
   <script type="module" src="app.js"></script>
 </body>

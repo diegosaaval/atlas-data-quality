@@ -11,7 +11,7 @@ RUN /venv/bin/pip install ".[ai]"
 # ---- runtime: small, non-root ---------------------------------------------
 FROM python:3.12-slim AS runtime
 ENV PATH="/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
-    ATLAS_DB_PATH=/data/atlas.db
+    ATLAS_DB_PATH=/data/atlas.db ATLAS_RULES_PATH=/data/reglas.json
 RUN useradd --create-home --uid 10001 atlas && mkdir /data && chown atlas /data
 WORKDIR /app
 COPY --from=build /venv /venv

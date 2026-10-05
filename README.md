@@ -1,205 +1,137 @@
-# ATLAS ONE
+# ATLAS · Monitor de calidad de datos
 
-**A production-style reference implementation of a data reliability platform for financial data.**
-Detect → contain → explain → recover, live in your browser.
+**Valida cada mañana las tablas que carga TI, detecta cargas anómalas y gestiona los incidentes con el equipo responsable.**
 
-[![ci](https://github.com/<your-user>/atlas-one/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-user>/atlas-one/actions/workflows/ci.yml)
-![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
-![coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
-![license](https://img.shields.io/badge/license-MIT-lightgrey)
+[![ci](https://github.com/<tu-usuario>/atlas-one/actions/workflows/ci.yml/badge.svg)](https://github.com/<tu-usuario>/atlas-one/actions/workflows/ci.yml)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![tests](https://img.shields.io/badge/tests-63%20pasando-brightgreen)
+![coverage](https://img.shields.io/badge/cobertura-95%25-brightgreen)
 
-> 🇪🇸 **Resumen:** ATLAS ONE simula una plataforma de datos bancaria en tiempo real (core banking, pagos, réplica, FX → bronze → silver → gold → reportes). Ejecuta controles de calidad determinísticos, bloquea datos malos con un *quality gate* basado en linaje, abre incidentes con causa raíz, blast radius y runbook, y tiene un **Failure Lab** para romper la plataforma en vivo y ver cómo se recupera. Guía de entrevista y demo en [docs/PITCH.md](docs/PITCH.md).
+> 🇬🇧 *ATLAS is a data-quality monitor for the tables an IT team loads every morning: availability, volume anomalies (weekday-aware), duplicates, nulls, business rules compiled to SQL, standard-deviation outliers and incident management with an AI-drafted escalation email. Spanish UI, banking demo data.*
 
 ---
 
-## Why
+## El problema
 
-In banks and fintechs, bad data is expensive and usually discovered by the wrong person:
-a duplicated batch inflates the ledger, a silent schema change breaks the regulatory report,
-a late partition starves the fraud model. Most portfolio projects show a pipeline that works.
-**ATLAS shows what happens when it doesn't** — and how a well-designed platform contains the damage.
+Las áreas de negocio dependen de tablas que otro equipo carga cada día. Cuando una carga llega **duplicada, vacía, tarde, con el archivo de ayer o con valores imposibles** (una tasa de mora negativa), normalmente alguien se entera cuando el reporte ya salió mal.
 
-## What you can do in the UI
+ATLAS no mueve datos: **los vigila**. Valida cada tabla apenas llega, compara contra su propio histórico y, si algo falla, abre un incidente con la evidencia y el correo listo para el equipo dueño.
 
-| View | What it shows |
+## Qué revisa
+
+| Pregunta | Control | Ejemplo |
+|---|---|---|
+| ¿Llegó la tabla de hoy? | **Disponibilidad** (automático) | "pagos no ha llegado; se esperaba a las 07:00" |
+| ¿Llegó completa? | **Volumen** vs. el mismo día de la semana (automático) | "Llegaron 0 registros; lo normal un lunes es ~740" |
+| ¿Trae las columnas acordadas? | **Estructura** (automático) | "Falta la columna canal" |
+| ¿Hay repetidos? | Regla *sin duplicados* | `id_credito` repetido 1.800 veces |
+| ¿Hay vacíos? | Regla *sin vacíos* (con tolerancia) | 30% de clientes sin `numero_documento` |
+| ¿Los valores tienen sentido? | Reglas de *rango*, *valores permitidos*, *comparación* | `tasa_mora` entre 0 y 100 · `saldo_capital <= monto_desembolsado` |
+| ¿Es el archivo de hoy? | Regla *datos del día* | `fecha_corte` trae la fecha de ayer |
+| ¿Es un valor normal? | Regla *outlier* con desviación estándar | "Suma de desembolsos 6,4σ por encima de lo normal" |
+| ¿Algo muy específico del negocio? | Regla *SQL personalizada* | `indicador = 'TRM' AND (valor < 2500 OR valor > 7000)` |
+
+Las reglas se crean **desde la interfaz, sin programar**. Cada una se traduce a una consulta SQL que se puede ver y **probar con la última carga antes de guardarla**. Las reglas SQL personalizadas se ejecutan en modo solo lectura.
+
+## Cómo funciona
+
+```
+ 05:30 ─────────── 06:00 ── 06:30 ── 07:00 ── 07:30 ── 08:00 ── 08:30 ─────────── 10:30
+                 clientes  cartera   pagos    tasas  desembolsos indicadores
+                    │         │        │        │        │         │
+                    ▼         ▼        ▼        ▼        ▼         ▼
+            ┌──────────────────────────────────────────────────────────────┐
+            │  ATLAS valida cada tabla apenas llega                        │
+            │  monitores automáticos + reglas de negocio (SQL) + outliers  │
+            └──────────────────────────────────────────────────────────────┘
+                    │ falla                                  │ todo OK
+                    ▼                                        ▼
+        Incidente por tabla (severidad, evidencia,     Puntaje de calidad
+        ejemplos, impacto, recurrencia, responsable)   e historial diario
+                    │
+                    ▼
+        Correo de escalamiento redactado (plantilla o Claude)
+        Se cierra solo cuando la siguiente carga cumple todo
+```
+
+- **Simulación realista.** Un banco sintético genera 6 tablas cada mañana (clientes, cartera, pagos, tasas, desembolsos, indicadores de cartera), con estacionalidad semanal, cartera estable y mora entre 3% y 6%. Arranca con **70 días de historia**.
+- **Línea base robusta.** El "volumen normal" se calcula con la mediana y la desviación de los **mismos días de la semana** (un domingo no se compara con un lunes). Los días anómalos **nunca** entran a la línea base.
+- **Un incidente por tabla, no una alerta por regla.** Una carga duplicada dispara la regla de duplicados, el volumen y el outlier, pero genera **un solo caso** con toda la evidencia.
+- **Falsos positivos medidos.** En 120 días simulados (720 cargas) la tasa de alertas sin motivo es menor a 1,5%. Lo verifica un test.
+
+## La interfaz
+
+| Vista | Qué muestra |
 |---|---|
-| **Overview** | Live reliability score (criticality-weighted), freshness SLO, MTTD/MTTR, rows processed vs quarantined vs held, estimated compute cost, per-dataset checks, last DAG run and an event feed. |
-| **Lineage** | 17 assets from source systems to consumers. Hover to trace upstream/downstream; edges held back by the quality gate animate in red. |
-| **Failure Lab** | Inject 10 real failure modes and watch a step-by-step timeline: injected → detected → gate → incident → blast radius → runbook → remediation → recovered. |
-| **Incidents** | Root cause, severity, owner, failing checks, grouped downstream symptoms, blast radius, runbook, timeline, **AI copilot** briefing and one-click remediation. |
-| **Contracts** | Versioned YAML data contracts with types, rules, PII classification and quarantine counts. |
-| **Risk signals** | Fraud features from `gold.fraud_features`, with **PII masked by role** (viewer / engineer / admin). |
+| **Resumen** | Línea de tiempo de llegadas del día, KPIs (puntaje, tablas recibidas, incidentes, controles fallidos), tarjeta por tabla con semáforo y tendencia de 30 días, actividad en vivo |
+| **Tablas** | Ficha de cada tabla: controles de hoy con registros de ejemplo y SQL, **volumen diario con banda de normalidad**, outliers, historial de 30 días (mapa de calor) y perfil de columnas |
+| **Incidentes** | Qué falló, ejemplos, impacto, recurrencia, línea de tiempo, **correo de escalamiento** y resolución |
+| **Reglas** | Lista de reglas activas, crear / probar / activar / eliminar |
 
-Also: a **2-minute guided demo** (`d`), **chaos mode** (random faults that auto-heal), keyboard shortcuts (`1`–`6`, `space`, `t`), light/dark theme.
+Además: **⚡ Simular anomalía** (13 problemas típicos: tabla que no llega, carga vacía, parcial, duplicada, archivo de ayer, tasa de mora negativa, pico de desembolsos, nulos, columna eliminada…), **▶ Demo** guiada de 2 minutos, modo claro/oscuro y modo móvil.
 
-## Quickstart
+## Cómo correrlo
 
-**One click** (only needs Python 3.11+, the launcher offers to install it if missing):
+**Con un clic** (solo necesita Python 3.11+; el lanzador ofrece instalarlo si no está):
 
-| OS | Do this |
+| Sistema | Qué hacer |
 |---|---|
-| Windows | double-click **`start.bat`** |
-| macOS | double-click **`start.command`** (first time: right-click → Open) |
+| Windows | doble clic en **`start.bat`** |
+| macOS | doble clic en **`start.command`** (la primera vez: clic derecho → Abrir) |
 | Linux | `./start.sh` |
 
-It creates `.venv`, installs dependencies (first run only), picks a free port, starts the server and opens the browser.
-`start.bat --test` runs the test suite; `--reinstall` rebuilds the environment.
+Crea el entorno, instala dependencias (solo la primera vez), busca un puerto libre y abre el navegador. `--test` corre los tests y `--reinstall` reconstruye el entorno.
 
-With Docker:
-
-```bash
-docker compose up --build              # http://localhost:8000
-```
-
-With Prometheus + Grafana:
+**Con Docker:**
 
 ```bash
-docker compose --profile observability up --build   # :8000 app · :9090 Prometheus · :3000 Grafana
+docker compose up --build        # http://localhost:8000
 ```
 
-Without Docker (Python 3.11+):
-
-```bash
-make install && make dev               # http://localhost:8000 · API docs at /docs
-make test                              # 63 tests, ~95% coverage
-```
-
-Optional: set `ANTHROPIC_API_KEY` to let the incident copilot use Claude. Without it the copilot uses a deterministic rules engine — the platform never depends on the LLM.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph Sources
-    A[core banking<br/>accounts CDC]
-    T[payments gateway<br/>transactions]
-    R[read replica]
-    F[FX provider]
-  end
-  subgraph Bronze[Bronze · raw, append-only]
-    BA[bronze.accounts]
-    BT[bronze.transactions]
-    BF[bronze.fx_rates]
-  end
-  subgraph Silver[Silver · contracts, dedup, RI, FX]
-    SA[silver.accounts]
-    ST[silver.transactions]
-  end
-  G{{Quality gate}}
-  subgraph Gold[Gold · data products]
-    L[daily_ledger]
-    X[risk_exposure]
-    FF[fraud_features]
-    O[payment_ops]
-  end
-  A --> BA --> SA --> ST
-  T --> BT --> ST
-  R -. reconciliation .-> BT
-  F --> BF --> ST
-  ST --> G --> L & X & FF & O
-  L --> P[Finance P&L] & REG[Regulatory report]
-  X --> REG
-  FF --> M[Fraud model]
-  O --> N[Ops dashboard]
-```
-
-Every tick of the engine is one 5-minute micro-batch in simulated time:
-
-```
-sources → bronze → silver (contract validation, quarantine, idempotent merge, RI, FX enrichment)
-        → reliability checks → lineage-aware quality gate → gold SQL models
-        → root-cause grouping → incidents → WebSocket snapshot
-```
-
-### Reliability checks
-
-| Dimension | Check | Blocks gold? |
-|---|---|---|
-| pipeline | task errors (e.g. IAM `AccessDenied`) | — (no data to block) |
-| freshness | age vs SLA, propagated through lineage (a product is only as fresh as its stalest input) | no — flags stale |
-| schema | data contract diff (missing / unexpected columns) | yes |
-| completeness | null rate per required column | yes |
-| uniqueness | duplicate `txn_id` in batch or already loaded | yes |
-| consistency | primary vs read-replica reconciliation (count + amount) | yes |
-| volume | batch size vs rolling median, seasonality-tolerant, never learns from anomalies | yes |
-| validity | share of records quarantined by the contract | yes |
-| integrity | transactions referencing unknown accounts | yes |
-| distribution | mean amount vs baseline (card-testing / fraud patterns) | no — fraud model needs fresh data |
-
-### Failure modes (the Failure Lab is also the regression suite)
-
-| Fault | Lands on | Detected as | Gate |
-|---|---|---|---|
-| Schema drift | payments gateway | `schema_drift` on bronze.transactions | blocks |
-| Missing partition | payments gateway | `late_data` (then backfilled) | stale |
-| Duplicate load | payments gateway | `duplicates` | blocks |
-| Volume anomaly | payments gateway | `volume_anomaly` | blocks |
-| Null burst | payments gateway | `completeness` | blocks |
-| Referential integrity break | payments gateway | `referential_integrity` on silver | blocks |
-| Broken replication | read replica | `replication` | blocks |
-| Permission failure | core banking | `access` on bronze.accounts, cascades to orphans | blocks |
-| Late FX data | FX provider | `late_data` on bronze.fx_rates | stale |
-| Fraud pattern | payments gateway | `distribution_drift` on silver | flows |
-
-`tests/test_engine.py` parametrizes over this catalog: every fault must be detected on the expected dataset, classified with the expected root cause, and fully recovered after remediation — with zero false positives over 24 simulated hours of normal traffic.
-
-### Incident design
-
-- **One incident per root cause, not per failing check.** Failures whose dataset has a failing ancestor are grouped as *symptoms* of the upstream incident (no alert storms).
-- **Severity from business impact**, derived from lineage: SEV1 when data stops for the regulatory report, SEV2 when a tier-1 asset is at risk, SEV3 otherwise. Auto-escalates when the gate closes.
-- **Resolution needs 2 consecutive green runs**; MTTD and MTTR are tracked per incident.
-- **The copilot explains, it never decides.** It receives the evidence (checks, lineage, quarantine reasons, task errors, history, runbook) and returns a briefing and a stakeholder update. If the LLM fails, it falls back to rules.
+Opcional: define `ANTHROPIC_API_KEY` para que Claude redacte los correos. Sin ella se usan plantillas; el monitor nunca depende de la IA.
 
 ## API
 
-Interactive docs at `/docs`. Highlights:
+Documentación interactiva en `/docs`. Lo principal:
 
-| Method | Path | |
+| Método | Ruta | |
 |---|---|---|
-| `WS` | `/ws` | live snapshots every run |
-| `GET` | `/api/state` | full platform snapshot |
-| `GET` | `/api/datasets/{id}` | checks, 48-run history, lineage, model SQL |
-| `GET` | `/api/lineage/openlineage` | last run as OpenLineage RunEvents |
-| `POST` | `/api/faults/{id}` | inject a fault (role ≥ engineer) |
-| `POST` | `/api/incidents/{id}/copilot` | AI / rules incident briefing |
-| `POST` | `/api/incidents/{id}/remediate` | apply remediation (role ≥ engineer) |
-| `GET` | `/api/risk/signals` | fraud features, PII masked by role |
-| `GET` | `/metrics` | Prometheus exposition format |
+| `WS` | `/ws` | estado en tiempo real |
+| `GET` | `/api/state` | resumen del día |
+| `GET` | `/api/tables/{tabla}` | controles, historial, outliers, perfil |
+| `GET/POST/PATCH/DELETE` | `/api/rules` | gestión de reglas |
+| `POST` | `/api/rules/preview` | probar una regla con la última carga |
+| `POST` | `/api/incidents/{id}/copilot` | redactar correo de escalamiento |
+| `POST` | `/api/incidents/{id}/escalate` · `/resolve` | gestión del incidente |
+| `POST` | `/api/scenarios/{id}` | simular una anomalía |
+| `GET` | `/metrics` | métricas Prometheus |
 
-RBAC is header-based (`X-Atlas-Role`) to keep the demo self-contained; see [ADR 0005](docs/adr/0005-header-rbac-for-demo.md) for what production would use.
-
-## Project layout
+## Estructura
 
 ```
 atlas/
-  catalog.py      datasets, owners, criticality, SLAs, lineage graph
-  contracts/      versioned YAML data contracts
-  contracts.py    schema diff + record validation
-  sources.py      deterministic synthetic financial sources with seasonality
-  faults.py       Failure Lab catalog
-  warehouse.py    SQLite medallion warehouse + dbt-style gold SQL models
-  checks.py       pure, deterministic reliability checks
-  runbooks.py     root-cause taxonomy and runbooks
-  engine.py       DAG run, quality gate, incidents, scores, snapshots
-  copilot.py      incident copilot (rules / Claude)
-  api.py          FastAPI REST + WebSocket + metrics
-web/              zero-build UI (HTML, CSS, vanilla JS, SVG charts)
-tests/            63 tests: unit, fault matrix, API, WebSocket
-docs/             ADRs, runbooks, roadmap, interview pitch
+  tables.py     6 tablas bancarias, responsables, horarios y el banco sintético que las carga
+  store.py      SQLite: datos cargados + metadatos (cargas, métricas diarias, resultados)
+  rules.py      tipos de regla, traducción a SQL, outliers, línea base y reglas por defecto
+  monitors.py   disponibilidad, volumen y estructura (automáticos)
+  engine.py     reloj de la mañana, validación al llegar, puntajes e incidentes
+  copilot.py    correo de escalamiento (plantilla o Claude)
+  api.py        FastAPI: REST + WebSocket + métricas
+web/            interfaz sin build (HTML, CSS, JavaScript, gráficos SVG)
+tests/          63 tests: reglas, monitores, cada anomalía, falsos positivos, API
 ```
 
-## Design decisions
+## Decisiones de diseño
 
-- [0001 Medallion layers with a lineage-aware quality gate](docs/adr/0001-medallion-quality-gate.md)
-- [0002 SQLite as the local engine](docs/adr/0002-sqlite-as-local-engine.md)
-- [0003 Deterministic checks decide, AI explains](docs/adr/0003-checks-decide-ai-explains.md)
-- [0004 Group incidents by root cause using lineage](docs/adr/0004-root-cause-grouping.md)
-- [0005 Header-based RBAC for the demo](docs/adr/0005-header-rbac-for-demo.md)
+- **Las reglas son SQL.** Así el analista ve exactamente qué se evalúa, y la misma regla se puede llevar a un warehouse, a dbt o a Great Expectations.
+- **Los controles deciden, la IA redacta.** Si una tabla pasa o falla lo decide una regla determinística y probada. El copiloto solo convierte la evidencia en un correo claro.
+- **Comparar contra el mismo día de la semana.** Evita falsas alarmas por estacionalidad (fines de semana, lunes).
+- **SQLite para la demo.** Corre en cualquier computador en segundos. En producción el mismo diseño se conecta a SQL Server, Oracle, Snowflake o Databricks.
 
-## Honest scope
+## Alcance
 
-This is a **reference implementation**, not a replacement for a production data platform. Sources are synthetic and the engine is SQLite so it runs anywhere in seconds. The interfaces were chosen to map 1:1 to a cloud stack — see the [roadmap](docs/ROADMAP.md) for the path to S3 + Databricks/Delta + Airflow + Terraform.
+Es un **prototipo con calidad de producción** sobre datos sintéticos, no un producto terminado. Siguientes pasos naturales: conectores a bases reales, notificaciones por Teams/Slack/correo, autenticación por roles y detección de deriva por columna.
 
-## License
+## Licencia
 
 MIT
