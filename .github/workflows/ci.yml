@@ -26,6 +26,19 @@ jobs:
       - name: Test
         run: pytest --cov=atlas --cov-report=term-missing --cov-fail-under=85
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Vulnerabilidades conocidas en dependencias
+        run: |
+          pip install pip-audit
+          pip install ".[ai]"
+          pip-audit --skip-editable
+
   docker:
     runs-on: ubuntu-latest
     needs: test

@@ -3,8 +3,9 @@
 **Monitor continuo de calidad y disponibilidad para tablas corporativas, con reglas configurables, detección estadística de anomalías, incidentes y escalamiento asistido por IA.**
 
 [![ci](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml)
+[![codeql](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/codeql.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/codeql.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests](https://img.shields.io/badge/tests-69%20pasando-brightgreen)
+![tests](https://img.shields.io/badge/tests-73%20pasando-brightgreen)
 ![coverage](https://img.shields.io/badge/cobertura-95%25-brightgreen)
 ![license](https://img.shields.io/badge/licencia-MIT-lightgrey)
 
@@ -36,7 +37,7 @@ ATLAS **no construye ni administra el pipeline de origen**. Observa los datos qu
 4. **¿Se comporta como siempre?**
 5. **Si no, ¿quién lo arregla y con qué evidencia?**
 
-> **Proyecto personal.** No es un sistema de la entidad donde trabajé ni lo encargó esa organización. Lo diseñé y desarrollé por mi cuenta, a partir de lo que hacía a diario en banca: validar las cargas de TI (duplicados, nulos, desviaciones, reglas como *tasa de mora ≥ 0*) para escalar incidentes a tiempo. Todos los datos son sintéticos.
+> **Proyecto personal e independiente.** ATLAS no es un sistema de la entidad financiera donde trabajé: no usa su código, sus datos ni su arquitectura, y no lo encargó esa organización. Allá trabajé validando la calidad de las cargas de datos (duplicados, nulos, desviaciones y reglas de negocio como *tasa de mora ≥ 0*) dentro de una plataforma corporativa en la nube, mucho más compleja de instanciar. ATLAS toma ese **enfoque** y lo convierte en una versión propia, simplificada y reproducible, construida desde cero con datos sintéticos para mostrar cómo diseñaría un monitor de calidad.
 
 ## Arquitectura
 
@@ -211,9 +212,13 @@ Ver [`.env.example`](.env.example).
 pytest --cov=atlas
 ```
 
-- **69 tests**, **95% de cobertura**, lint con **ruff**.
-- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública y el lanzador (incluido el acceso directo de Mac).
+- **73 tests**, **95% de cobertura**, lint con **ruff**.
+- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública (incluida una regla SQL maliciosa que se cancela sola), los encabezados de seguridad y el lanzador (incluido el acceso directo de Mac).
 - El CI de GitHub Actions corre lint y tests en Python 3.11, 3.12 y 3.13, construye la imagen Docker y hace una prueba de humo del contenedor.
+
+## Seguridad
+
+La demo es pública, así que está protegida contra el abuso: las reglas SQL de los visitantes son de solo lectura, tienen tiempo límite y tamaño máximo; hay límite de acciones por visitante, encabezados de seguridad (CSP) y un contenedor sin privilegios. Cada cambio pasa por CodeQL y `pip-audit`. Detalle y cómo reportar un problema: [SECURITY.md](SECURITY.md).
 
 ## API
 
@@ -241,8 +246,8 @@ atlas/
   copilot.py    correo de escalamiento (plantilla o Claude)
   api.py        FastAPI: REST + WebSocket + métricas
 web/            interfaz en vivo
-tests/          69 tests
-docs/           capturas, decisiones de diseño y guía de entrevista
+tests/          73 tests
+docs/           capturas y decisiones de diseño
 run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 ```
 

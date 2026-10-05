@@ -1,6 +1,6 @@
 [project]
-name = "atlas-one"
-version = "0.2.0"
+name = "atlas-data-quality"
+version = "1.0.0"
 description = "Monitor de calidad de datos: valida las tablas que se cargan cada día y gestiona incidentes."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -104,3 +104,41 @@ def test_public_demo_lets_visitors_manage_their_own_rules_with_a_cap(public):
     assert public.post("/api/rules", json=body).status_code == 429
     assert public.patch(f"/api/rules/{first}", json={"enabled": False}).status_code == 200
     assert public.delete(f"/api/rules/{first}").status_code == 200
+
+
+def test_security_headers(client):
+    r = client.get("/")
+    csp = r.headers["content-security-policy"]
+    assert "default-src 'self'" in csp and "frame-ancestors 'none'" in csp and "wss://testserver" in csp
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_public_demo_rate_limits_writes_per_visitor(client, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(api, "settings", replace(api.settings, public_demo=True, max_writes_per_minute=3))
+    api._writes.clear()
+    codes = [client.post("/api/control", json={"speed": 1}).status_code for _ in range(5)]
+    assert codes[:3] == [200, 200, 200] and codes[3:] == [429, 429]
+    assert client.get("/api/state").status_code == 200  # leer nunca se limita
+    api._writes.clear()
+
+
+def test_runaway_sql_rule_is_cancelled_not_frozen(client):
+    api.engine.run_day()
+    body = {"table": "pagos", "type": "sql", "params": {
+        "condition": "1 IN (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT x FROM c WHERE x < 0)"}}
+    import time
+
+    t0 = time.monotonic()
+    r = client.post("/api/rules/preview", json=body).json()
+    assert time.monotonic() - t0 < 3
+    assert r["status"] == "error" and "canceló" in r["message"]
+
+
+def test_oversized_rules_are_rejected(client):
+    long = {"table": "pagos", "type": "sql", "params": {"condition": "valor_pago > 0 AND " * 60}}
+    assert client.post("/api/rules", json=long).status_code == 422
+    many = {"table": "pagos", "type": "valores_permitidos", "params": {"column": "canal", "values": [str(i) for i in range(200)]}}
+    assert client.post("/api/rules", json=many).status_code == 422

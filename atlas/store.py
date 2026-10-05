@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from typing import Any
 
 from .tables import TABLES, TableSpec
@@ -56,13 +57,25 @@ class Store:
             row = self.conn.execute(sql, params).fetchone()
             return row[0] if row else None
 
-    def query_readonly(self, sql: str, params: dict[str, Any] | tuple = ()) -> list[dict[str, Any]]:
-        """Run untrusted (user rule) SQL with writes disabled at the engine level."""
+    def query_readonly(self, sql: str, params: dict[str, Any] | tuple = (), timeout: float = 0.5,
+                       max_rows: int = 1000) -> list[dict[str, Any]]:
+        """Run untrusted (user rule) SQL: writes disabled, time-boxed and with a row cap.
+
+        A recursive CTE or a huge cross join is interrupted after `timeout` seconds instead of
+        freezing the monitor for everybody.
+        """
+        deadline = time.monotonic() + timeout
         with self.lock:
             self.conn.execute("PRAGMA query_only = ON")
+            self.conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 5_000)
             try:
-                return [dict(r) for r in self.conn.execute(sql, params)]
+                return [dict(r) for r in self.conn.execute(sql, params).fetchmany(max_rows)]
+            except sqlite3.OperationalError as exc:
+                if "interrupted" in str(exc):
+                    raise TimeoutError(f"la consulta superó {timeout:g} s y se canceló") from exc
+                raise
             finally:
+                self.conn.set_progress_handler(None, 0)
                 self.conn.execute("PRAGMA query_only = OFF")
 
     # ----------------------------------------------------------------- writes

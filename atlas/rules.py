@@ -131,6 +131,8 @@ class Rule:
             if numeric and cols[name].type not in ("entero", "decimal"):
                 raise ValueError(f"La columna '{name}' no es numérica")
 
+        if len(str(self.params)) > 2000 or len(self.note) > 300:
+            raise ValueError("La regla es demasiado larga")
         if self.type == "no_nulos":
             need_column()
             p["max_pct"] = float(p.get("max_pct") or 0)
@@ -156,6 +158,8 @@ class Rule:
                 values = [v.strip() for v in values.split(",") if v.strip()]
             if not values:
                 raise ValueError("Indica al menos un valor permitido")
+            if len(values) > 100 or any(len(str(v)) > 100 for v in values):
+                raise ValueError("Máximo 100 valores permitidos, de hasta 100 caracteres cada uno")
             p["values"] = values
         elif self.type == "comparacion":
             need_column(numeric=False)
@@ -176,6 +180,8 @@ class Rule:
             cond = (p.get("condition") or "").strip()
             if not cond:
                 raise ValueError("Escribe la condición SQL que identifica los registros malos")
+            if len(cond) > 500:
+                raise ValueError("La condición SQL no puede pasar de 500 caracteres")
             if FORBIDDEN_SQL.search(cond):
                 raise ValueError("La condición solo puede leer datos (sin ;, comentarios ni comandos de escritura)")
             p["condition"] = cond

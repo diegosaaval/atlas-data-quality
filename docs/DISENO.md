@@ -4,7 +4,7 @@ Este documento explica **por qué** ATLAS es como es: qué problema ataca, qué 
 
 ## 1. El problema, contado desde la operación
 
-En un banco, las áreas de negocio consumen tablas que otro equipo (TI o integración de datos) carga cada madrugada. Quien usa los datos no controla la carga, pero responde por lo que sale de ellos. Los problemas típicos que veía a diario:
+En un banco, las áreas de negocio consumen tablas que otro equipo (TI o integración de datos) carga cada madrugada. Quien usa los datos no controla la carga, pero responde por lo que sale de ellos. Los problemas típicos que veía a diario (descritos de forma general; ATLAS no replica la arquitectura ni los procesos de ninguna entidad):
 
 | Lo que pasa | Cómo se nota (tarde) |
 |---|---|

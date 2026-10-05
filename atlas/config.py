@@ -23,6 +23,8 @@ class Settings:
     # Demo pública (internet): protege las reglas base y evita que un visitante deje todo en pausa o lo reinicie.
     public_demo: bool = field(default_factory=lambda: _env_bool("ATLAS_PUBLIC_DEMO", False))
     max_user_rules: int = 15
+    max_writes_per_minute: int = 40  # por visitante, solo en la demo pública
+    max_ws_clients: int = 300
     max_pause_seconds: int = 120
     start_date: date = field(default_factory=date.today)
     copilot_model: str = field(default_factory=lambda: os.getenv("ATLAS_COPILOT_MODEL", "claude-opus-5-5"))
