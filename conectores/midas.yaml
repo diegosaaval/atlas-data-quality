@@ -1,43 +1,45 @@
-# Conector ATLAS ← FINFLOW
-# FINFLOW (pipeline PySpark + dbt) publica sus tablas gold en Parquet y deja un _manifest.json
-# por cada publicación. ATLAS lee ese manifiesto y valida cada fecha procesada, sin escribir nada.
+# Conector ATLAS ← MIDAS
+# MIDAS (pipeline PySpark + dbt) convierte datos crudos en tablas gold en Parquet y deja un
+# _manifest.json por cada publicación. ATLAS lee ese manifiesto y valida cada fecha procesada, sin escribir nada.
 #
-# La ruta se puede cambiar con la variable ATLAS_FINFLOW_GOLD (por ejemplo, otra carpeta o, más
-# adelante, s3://mi-bucket/gold con credenciales de solo lectura).
+# La ruta se busca en orden (la primera carpeta que exista) y se puede cambiar con la variable
+# ATLAS_MIDAS_GOLD o ATLAS_FUENTE_RUTA (por ejemplo, otra carpeta o, más adelante, s3://mi-bucket/gold
+# con credenciales de solo lectura).
 
-fuente: finflow
-titulo: FINFLOW · pipeline financiero
-descripcion: Tablas gold publicadas por FINFLOW (landing → bronze → silver con PySpark → gold con dbt).
-ruta: ../finflow/data/lake/gold
+fuente: midas
+titulo: MIDAS · pipeline financiero
+descripcion: Convierte datos crudos en tablas gold (landing → bronze → silver con PySpark → gold con dbt).
+ruta:
+  - ../midas-data-pipeline/data/lake/gold
+  - ../midas/data/lake/gold
 formato: parquet
 manifiesto: _manifest.json   # opcional: sin manifiesto, ATLAS valida cuando cambian los archivos
-hora_esperada: "07:00"      # FINFLOW debe publicar cada día antes de esta hora (+60 min de gracia)
-responsable: Equipo de Datos · FINFLOW
-correo: datos.finflow@fintech.example
-url_proyecto: https://github.com/diegosaaval
-url_corrida: "http://localhost:8100/#run={run_id}"   # pantalla de etapas de FINFLOW (finflow ui)
-
+hora_esperada: "07:00"      # MIDAS debe publicar cada día antes de esta hora (+60 min de gracia)
+responsable: Equipo de Datos · MIDAS
+correo: datos.midas@fintech.example
+url_proyecto: https://github.com/diegosaaval/midas-data-pipeline
+url_corrida: "http://localhost:8100/#run={run_id}"   # pantalla de etapas de MIDAS
 tablas:
   - nombre: pagos_gold
-    titulo: Pagos (FINFLOW)
+    titulo: Pagos (MIDAS)
     descripcion: Pagos procesados y deduplicados, con alertas de velocidad y monto.
     tipo: incremental        # se valida la partición de cada fecha procesada
     columna_fecha: fecha
     consumidores: [Indicadores financieros, Prevención de fraude, Conciliación]
   - nombre: contracargos_gold
-    titulo: Contracargos (FINFLOW)
+    titulo: Contracargos (MIDAS)
     descripcion: Contracargos con el pago original y los días hasta el reclamo.
     tipo: incremental
     columna_fecha: fecha
     consumidores: [Gestión de disputas, Riesgo de comercios]
   - nombre: indicadores_financieros
-    titulo: Indicadores financieros (FINFLOW)
+    titulo: Indicadores financieros (MIDAS)
     descripcion: TPV, tasa de aprobación, ticket promedio, devoluciones y contracargos por día.
     tipo: incremental
     columna_fecha: fecha
     consumidores: [Comité financiero, Tablero gerencial]
   - nombre: clientes_gold
-    titulo: Clientes (FINFLOW)
+    titulo: Clientes (MIDAS)
     descripcion: Estado actual de cada cliente.
     tipo: snapshot           # foto completa en cada publicación
     columna_fecha: fecha_vinculacion

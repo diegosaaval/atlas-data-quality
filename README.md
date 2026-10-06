@@ -134,22 +134,22 @@ Desde **Simular anomalía** (o en la demo guiada de 2 minutos, botón **Ver demo
 
 ![Reglas configurables](docs/img/reglas.png)
 
-## Tus propias tablas y FINFLOW
+## Tus propias tablas y MIDAS
 
 La demo usa un banco simulado, pero ATLAS vigila **cualquier tabla que le indiques**. Un conector es un YAML en `conectores/` con la ruta de los archivos (Parquet o CSV) y las tablas a mirar. ATLAS lee su estructura sola, valida su historia, **sugiere reglas** para las tablas que no tengan y queda vigilando cada nueva publicación. Se cambia de fuente desde el botón **Fuente de datos**, sin tocar el código. Guía: [docs/CONECTORES.md](docs/CONECTORES.md).
 
-El primer conector es **[FINFLOW](https://github.com/diegosaaval)**, mi pipeline financiero (PySpark + dbt + Airflow): FINFLOW publica sus tablas gold (`pagos_gold`, `clientes_gold`, `contracargos_gold`, `indicadores_financieros`) y ATLAS verifica que sean confiables.
+El primer conector es **[MIDAS](https://github.com/diegosaaval/midas-data-pipeline)**, mi pipeline financiero (PySpark + dbt + Airflow): MIDAS convierte datos crudos en tablas gold (`pagos_gold`, `clientes_gold`, `contracargos_gold`, `indicadores_financieros`) y ATLAS verifica que sean confiables.
 
 ```
-FINFLOW  landing → bronze → silver → gold (Parquet) + _manifest.json
+MIDAS    landing → bronze → silver → gold (Parquet) + _manifest.json
                                          │
 ATLAS                                    ▼
          lee la estructura → valida cada fecha publicada → incidentes y escalamiento
 ```
 
-Con FINFLOW en la carpeta vecina (`../finflow`), basta con elegir **FINFLOW** en *Fuente de datos* o arrancar con `./start.sh --fuente finflow`.
+Con MIDAS en la carpeta vecina (`../midas-data-pipeline`), basta con elegir **MIDAS** en *Fuente de datos* o arrancar con `./start.sh --fuente midas`.
 
-Los dos proyectos se enlazan en ambos sentidos: la pantalla de etapas de FINFLOW tiene **Ver en ATLAS**, y cada incidente de ATLAS tiene **Ver la corrida que la trajo**, que abre la corrida exacta de FINFLOW (sus etapas, filas y cuarentena). Así se pasa del síntoma ("la tasa de aprobación cayó") a la causa en el pipeline en un clic.
+Los dos proyectos se enlazan en ambos sentidos: la pantalla de etapas de MIDAS tiene **Ver en ATLAS**, y cada incidente de ATLAS tiene **Ver la corrida que la trajo**, que abre la corrida exacta de MIDAS (sus etapas, filas y cuarentena). Así se pasa del síntoma ("la tasa de aprobación cayó") a la causa en el pipeline en un clic.
 
 ## Datos de ejemplo
 
@@ -259,7 +259,7 @@ atlas/
   connectors.py conectores: lee cualquier tabla Parquet/CSV, su estructura y sugiere reglas
   copilot.py    correo de escalamiento (plantilla o Claude)
   api.py        FastAPI: REST + WebSocket + métricas
-conectores/     fuentes reales en YAML (FINFLOW incluido)
+conectores/     fuentes reales en YAML (MIDAS incluido)
 web/            interfaz en vivo
 tests/          81 tests
 docs/           capturas y decisiones de diseño
@@ -271,10 +271,10 @@ run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 - [x] Monitor sobre tablas simuladas, reglas configurables, incidentes y copiloto
 - [x] Despliegue público con Docker en Render: https://atlas-data-quality.onrender.com
 - [x] Conectores a tablas reales en Parquet y CSV, con reglas sugeridas
-- [x] Monitorear las tablas gold de **FINFLOW**
+- [x] Monitorear las tablas gold de **MIDAS**
 - [ ] Conector a una base (PostgreSQL / SQL Server, solo lectura)
 - [ ] Conector cloud (S3 + Athena con IAM de solo lectura)
-- [ ] FINFLOW en AWS: leer su gold desde S3 / Athena
+- [ ] MIDAS en AWS: leer su gold desde S3 / Athena
 
 ATLAS seguirá siendo un **monitor**, no un ETL.
 

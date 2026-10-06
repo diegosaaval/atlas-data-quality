@@ -22,7 +22,7 @@ class Settings:
     random_anomalies: bool = field(default_factory=lambda: _env_bool("ATLAS_RANDOM_ANOMALIES", True))
     # Demo pública (internet): protege las reglas base y evita que un visitante deje todo en pausa o lo reinicie.
     public_demo: bool = field(default_factory=lambda: _env_bool("ATLAS_PUBLIC_DEMO", False))
-    # Fuente de datos: vacío = banco simulado (demo). Un nombre = conectores/<nombre>.yaml (p. ej. "finflow").
+    # Fuente de datos: vacío = banco simulado (demo). Un nombre = conectores/<nombre>.yaml (p. ej. "midas").
     source: str = field(default_factory=lambda: os.getenv("ATLAS_FUENTE", "").strip())
     source_config: str | None = field(default_factory=lambda: os.getenv("ATLAS_FUENTE_CONFIG") or None)
     source_path: str | None = field(default_factory=lambda: os.getenv("ATLAS_FUENTE_RUTA") or None)

@@ -10,7 +10,7 @@ ATLAS trae una demo con un banco simulado, pero está hecho para vigilar **cualq
 fuente: ventas
 titulo: Ventas diarias
 descripcion: Archivos que publica el equipo comercial cada mañana.
-ruta: /ruta/a/mis/datos          # carpeta con los archivos (o usa ATLAS_FUENTE_RUTA)
+ruta: /ruta/a/mis/datos          # carpeta con los archivos (o una lista: se usa la primera que exista; o ATLAS_FUENTE_RUTA)
 formato: parquet                 # parquet o csv
 manifiesto: ""                   # opcional (ver abajo)
 hora_esperada: "07:00"           # antes de esta hora (+60 min) debe haber datos nuevos

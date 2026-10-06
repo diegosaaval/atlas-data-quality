@@ -6,7 +6,7 @@ cada tabla por su cuenta y, si no le das reglas, propone unas iniciales a partir
 los datos. Todo se lee con DuckDB en modo solo lectura.
 
 Cuándo hay "carga nueva":
-* con manifiesto (como FINFLOW): cada vez que cambia `published_at`, por cada fecha procesada;
+* con manifiesto (como MIDAS): cada vez que cambia `published_at`, por cada fecha procesada;
 * sin manifiesto: cada vez que cambia la fecha de modificación de los archivos.
 """
 
@@ -188,14 +188,19 @@ def suggest_rules(spec: TableSpec, rows: list[dict[str, Any]]) -> list[dict[str,
     return out
 
 
+def _resolve(raw: str) -> Path:
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else (ROOT / path).resolve()
+
+
 def load_source(name: str, config: str | None = None, path_override: str | None = None) -> ParquetSource:
     """Carga un conector desde conectores/<name>.yaml (o la ruta `config`)."""
     cfg_path = Path(config) if config else ROOT / "conectores" / f"{name}.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     raw_path = path_override or os.getenv("ATLAS_FUENTE_RUTA") or os.getenv(f"ATLAS_{name.upper()}_GOLD") or cfg["ruta"]
-    base = Path(raw_path).expanduser()
-    if not base.is_absolute():
-        base = (ROOT / base).resolve()
+    # `ruta` puede ser una lista de carpetas candidatas: se usa la primera que exista.
+    candidates = [_resolve(p) for p in (raw_path if isinstance(raw_path, list) else [raw_path])]
+    base = next((p for p in candidates if p.is_dir()), candidates[0])
     h, m = (int(x) for x in str(cfg.get("hora_esperada", "07:00")).split(":"))
     fmt = cfg.get("formato", "parquet")
     specs, load_types, date_columns, files = [], {}, {}, {}

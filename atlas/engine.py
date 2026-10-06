@@ -56,7 +56,7 @@ class Incident:
     resolution: str | None = None
     scenario: str | None = None
     loads_failed: int = 1
-    run_id: str | None = None  # corrida de la fuente (p. ej. FINFLOW) que trajo la carga con falla
+    run_id: str | None = None  # corrida de la fuente (p. ej. MIDAS) que trajo la carga con falla
     _last_day: str = ""
 
     def minutes_open(self, now: tuple[str, int]) -> int:
@@ -198,7 +198,7 @@ class Engine:
         return True
 
     def _run_url(self, run_id: str | None) -> str | None:
-        """Enlace a la corrida en la herramienta de la fuente (p. ej. la pantalla de etapas de FINFLOW)."""
+        """Enlace a la corrida en la herramienta de la fuente (p. ej. la pantalla de etapas de MIDAS)."""
         if not (self.source and self.source.run_url and run_id):
             return None
         return self.source.run_url.replace("{run_id}", quote(str(run_id), safe=""))

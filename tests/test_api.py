@@ -160,5 +160,5 @@ def test_sources_listing_and_switching(client, monkeypatch):
 
 
 def test_public_demo_cannot_switch_source(public):
-    assert public.post("/api/source", json={"name": "finflow"}).status_code == 403
+    assert public.post("/api/source", json={"name": "midas"}).status_code == 403
     assert [s["name"] for s in public.get("/api/sources").json()["sources"]] == ["demo"]

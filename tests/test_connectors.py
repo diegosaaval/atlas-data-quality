@@ -4,16 +4,18 @@ from datetime import date, datetime, timedelta
 
 import duckdb
 import pytest
+import yaml
 
 from atlas import tables
 from atlas.config import Settings
+from atlas.connectors import ROOT, load_source
 from atlas.engine import Engine
 
 START = date(2026, 9, 1)
 
 
 def write_gold(folder, days=10, dup_on=None, published="2026-10-05T12:00:00+00:00"):
-    """Una mini 'FINFLOW': pagos (incremental), indicadores (incremental) y clientes (snapshot)."""
+    """Una mini 'MIDAS': pagos (incremental), indicadores (incremental) y clientes (snapshot)."""
     folder.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     con.execute("""CREATE TABLE pagos AS
@@ -140,6 +142,23 @@ def test_connecting_after_an_incremental_run_still_loads_the_whole_history(tmp_p
     finally:
         engine.close()
         tables.use_tables(tables.BANK_TABLES)
+
+
+def test_path_can_list_candidate_folders_and_uses_the_first_that_exists(tmp_path):
+    gold, cfg = tmp_path / "gold", tmp_path / "prueba.yaml"
+    write_gold(gold)
+    write_config(cfg, gold)
+    text = cfg.read_text().replace(f"ruta: {gold}", f"ruta:\n  - {tmp_path / 'no-existe'}\n  - {gold}")
+    cfg.write_text(text)
+    assert load_source("prueba", str(cfg)).path == gold
+
+
+def test_midas_connector_points_to_the_renamed_project():
+    cfg = yaml.safe_load((ROOT / "conectores" / "midas.yaml").read_text(encoding="utf-8"))
+    assert cfg["fuente"] == "midas" and cfg["ruta"][0] == "../midas-data-pipeline/data/lake/gold"
+    assert cfg["url_corrida"] == "http://localhost:8100/#run={run_id}"
+    assert {t["titulo"] for t in cfg["tablas"]} == {"Pagos (MIDAS)", "Contracargos (MIDAS)",
+                                                   "Indicadores financieros (MIDAS)", "Clientes (MIDAS)"}
 
 
 def test_csv_source_without_manifest_validates_when_files_change(tmp_path):

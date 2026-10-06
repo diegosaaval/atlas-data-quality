@@ -65,5 +65,5 @@ Con `ATLAS_PUBLIC_DEMO=1` (lo activa `render.yaml`) la demo se protege para visi
 1. **Conector a una base real** (PostgreSQL o SQL Server, usuario de solo lectura) que lea solo la partición del día.
 2. **Conector cloud:** S3 + Athena con un rol IAM de solo lectura.
 3. **Notificaciones reales** por Teams, Slack o correo.
-4. **Monitorear FINFLOW**, mi pipeline financiero en AWS: FINFLOW construye los datos, ATLAS verifica que sean confiables.
+4. **Monitorear MIDAS**, mi pipeline financiero en AWS: MIDAS convierte datos crudos en tablas gold, ATLAS verifica que sean confiables.
 5. Autenticación por roles y bitácora de quién resolvió qué.

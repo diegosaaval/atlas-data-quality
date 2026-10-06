@@ -253,7 +253,7 @@ def main() -> None:
     parser.add_argument("--reinstall", action="store_true", help="rehacer el entorno")
     parser.add_argument("--sin-acceso", action="store_true", help="no crear el acceso directo en el escritorio")
     parser.add_argument("--fuente", default=os.getenv("ATLAS_FUENTE", ""),
-                        help="conector de conectores/<nombre>.yaml (p. ej. finflow); vacío = demo")
+                        help="conector de conectores/<nombre>.yaml (p. ej. midas); vacío = demo")
     args = parser.parse_args()
 
     sys.stdout.reconfigure(line_buffering=True)  # los mensajes salen en el acto, también en Windows
