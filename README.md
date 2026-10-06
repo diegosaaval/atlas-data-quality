@@ -233,7 +233,7 @@ Ver [`.env.example`](.env.example).
 pytest --cov=atlas
 ```
 
-- **88 tests**, **94% de cobertura**, lint con **ruff**.
+- **89 tests**, **94% de cobertura**, lint con **ruff**.
 - Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública (incluida una regla SQL maliciosa que se cancela sola), los encabezados de seguridad, los conectores (Parquet con manifiesto, CSV sin manifiesto y fuentes publicadas por URL) y el lanzador (incluido el acceso directo de Mac).
 - El CI de GitHub Actions corre lint y tests en Python 3.11, 3.12 y 3.13, construye la imagen Docker y hace una prueba de humo del contenedor.
 

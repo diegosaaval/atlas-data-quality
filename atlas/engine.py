@@ -355,8 +355,9 @@ class Engine:
         return round(100 * got / total, 1) if total else 100.0
 
     # -------------------------------------------------------------- incidents
-    def _timeline(self, inc: Incident, kind: str, text: str) -> None:
-        inc.timeline.append({"date": self.today.isoformat(), "time": hhmm(self.minute), "kind": kind, "text": text})
+    def _timeline(self, inc: Incident, kind: str, text: str, at: tuple[str, int] | None = None) -> None:
+        day, minute = at or (self.today.isoformat(), self.minute)
+        inc.timeline.append({"date": day, "time": hhmm(minute), "kind": kind, "text": text})
 
     def _open_incident(self, name: str) -> Incident | None:
         return next((i for i in self.incidents.values() if i.table == name and i.resolved is None), None)
@@ -398,9 +399,11 @@ class Engine:
 
     def _resolve(self, inc: Incident, mode: str, text: str) -> None:
         inc.status = "resuelto"
-        inc.resolved = self.now
+        # Con un conector, "ahora" es la fecha de los datos: si la fuente re-publica fechas anteriores
+        # (un backfill), el cierre no puede quedar antes de la apertura.
+        inc.resolved = max(self.now, inc.opened)
         inc.resolution = mode
-        self._timeline(inc, "resuelto", f"Resuelto ({mode}): {text}")
+        self._timeline(inc, "resuelto", f"Resuelto ({mode}): {text}", at=inc.resolved)
         self.log("success", f"{inc.id} resuelto: {inc.table}", inc.table)
 
     def escalate(self, incident_id: str, actor: str = "analista") -> Incident:

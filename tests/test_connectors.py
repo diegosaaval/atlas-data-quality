@@ -238,3 +238,16 @@ def test_remote_source_rejects_other_schemes_and_reports_unreachable_urls(tmp_pa
     write_config(cfg, "http://127.0.0.1:9/gold")
     with pytest.raises(FileNotFoundError, match="No pude leer"):
         load_source("prueba", str(cfg))
+
+
+def test_republishing_earlier_dates_never_closes_an_incident_before_it_opened(source):
+    engine, gold = source
+    write_gold(gold, days=11, dup_on=10, published="2026-10-06T12:00:00+00:00")  # 2026-09-11 con duplicados
+    engine.tick()
+    inc = next(i for i in engine.incidents.values() if i.table == "pagos_gold")
+    write_gold(gold, days=10, published="2026-10-07T12:00:00+00:00")  # la fuente re-publica hasta el 10
+    engine.tick()
+    data = engine.incident_dict(inc)
+    assert data["status"] == "resuelto" and data["minutes_open"] >= 0
+    dates = [e["date"] for e in inc.timeline]
+    assert dates == sorted(dates)  # el cierre no queda antes de la detección
