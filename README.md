@@ -21,7 +21,7 @@
 
 > 🇬🇧 *ATLAS monitors the tables other teams load every day: SLA-based availability, weekday-aware volume anomalies, schema checks, business rules compiled to SQL, standard-deviation outliers, and one incident per table with evidence and an AI-drafted escalation email. Deterministic checks decide; AI only explains.*
 
-🟢 **[Probar la demo en vivo](https://atlas-data-quality.onrender.com)** *(si lleva rato sin visitas, tarda cerca de un minuto en despertar)* · ▶️ **[Ver el video demostrativo en YouTube (2:47)](https://youtu.be/R8pWRAv-FZo)** · 📄 **[Decisiones de diseño](docs/DISENO.md)**
+🟢 **[Probar la demo en vivo](https://atlas-data-quality.onrender.com)** *(si lleva rato sin visitas, tarda cerca de un minuto en despertar)* · ▶️ **[Ver el video demostrativo en YouTube (2:47)](https://youtu.be/R8pWRAv-FZo)** · ▶️ **[MIDAS + ATLAS (1:49)](https://youtu.be/PXF2G3ek3ZU)** · 📄 **[Decisiones de diseño](docs/DISENO.md)**
 
 ---
 
@@ -151,6 +151,14 @@ Con MIDAS en la carpeta vecina (`../midas-data-pipeline`), basta con elegir **MI
 
 Los dos proyectos se enlazan en ambos sentidos: la pantalla de etapas de MIDAS tiene **Ver en ATLAS**, y cada incidente de ATLAS tiene **Ver la corrida que la trajo**, que abre la corrida exacta de MIDAS (sus etapas, filas y cuarentena). Así se pasa del síntoma ("la tasa de aprobación cayó") a la causa en el pipeline en un clic.
 
+> **MIDAS convierte datos crudos en oro; ATLAS verifica que sea oro de verdad.** El 1 de octubre la pasarela de tarjetas falla: cada registro es válido y MIDAS publica todo en OK, pero ATLAS ve que la tasa de aprobación cayó de 0,92 a 0,59 (7σ) y abre el incidente.
+
+| ▶️ MIDAS + ATLAS · 1:49 | ▶️ MIDAS · 2 min |
+|---|---|
+| [![MIDAS + ATLAS](https://img.youtube.com/vi/PXF2G3ek3ZU/hqdefault.jpg)](https://youtu.be/PXF2G3ek3ZU) | [![MIDAS](https://img.youtube.com/vi/KFIgQx3N6a8/hqdefault.jpg)](https://youtu.be/KFIgQx3N6a8) |
+
+🟢 **Los dos en vivo:** [ATLAS validando a MIDAS](https://atlas-midas.onrender.com) + [la pantalla de etapas de MIDAS](https://midas-data-pipeline.onrender.com). En la web, MIDAS es una vitrina que repite en bucle una corrida real (Spark no cabe en un servidor gratuito) y publica sus tablas gold por internet; esta instancia de ATLAS las lee desde esa **URL** con el mismo conector, como en local. Se despliegan juntos desde el `render.yaml` de MIDAS.
+
 ## Datos de ejemplo
 
 Un banco sintético (determinístico por semilla) carga cada mañana 6 tablas con comportamiento realista: cartera estable de ~1.800 créditos, mora entre 3% y 6%, fines de semana con menos movimiento. Arranca con **70 días de historia**, incluidos incidentes pasados, para que las tendencias tengan sentido desde el primer minuto.
@@ -225,8 +233,8 @@ Ver [`.env.example`](.env.example).
 pytest --cov=atlas
 ```
 
-- **81 tests**, **95% de cobertura**, lint con **ruff**.
-- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública (incluida una regla SQL maliciosa que se cancela sola), los encabezados de seguridad, los conectores (Parquet con manifiesto y CSV sin manifiesto) y el lanzador (incluido el acceso directo de Mac).
+- **88 tests**, **94% de cobertura**, lint con **ruff**.
+- Cubren cada tipo de regla y su SQL, los monitores, **los 13 escenarios** (detección y cierre automático), la **tasa de falsos positivos**, la seguridad de las reglas SQL, el copiloto con su fallback, la API completa (REST y WebSocket), las protecciones de la demo pública (incluida una regla SQL maliciosa que se cancela sola), los encabezados de seguridad, los conectores (Parquet con manifiesto, CSV sin manifiesto y fuentes publicadas por URL) y el lanzador (incluido el acceso directo de Mac).
 - El CI de GitHub Actions corre lint y tests en Python 3.11, 3.12 y 3.13, construye la imagen Docker y hace una prueba de humo del contenedor.
 
 ## Seguridad
@@ -272,6 +280,7 @@ run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 - [x] Despliegue público con Docker en Render: https://atlas-data-quality.onrender.com
 - [x] Conectores a tablas reales en Parquet y CSV, con reglas sugeridas
 - [x] Monitorear las tablas gold de **MIDAS**
+- [x] Conector por URL: la demo web de ATLAS valida la vitrina pública de MIDAS
 - [ ] Conector a una base (PostgreSQL / SQL Server, solo lectura)
 - [ ] Conector cloud (S3 + Athena con IAM de solo lectura)
 - [ ] MIDAS en AWS: leer su gold desde S3 / Athena

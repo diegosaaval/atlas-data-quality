@@ -66,6 +66,21 @@ Los tipos de regla son los mismos de la interfaz: `no_nulos`, `unico`, `rango`, 
 
 - **Sin manifiesto:** ATLAS detecta que la fecha de modificación de los archivos cambió y valida el estado actual con la fecha de hoy.
 
+## Fuentes publicadas por internet (URL)
+
+`ruta` (o `ATLAS_FUENTE_RUTA`) también puede ser una URL `https://` que sirva los mismos archivos y el manifiesto. ATLAS revisa el manifiesto remoto cada 5 segundos y, solo cuando cambia su `published_at`, descarga las tablas a una caché local (archivo temporal + reemplazo atómico, máximo 80 MB por archivo; solo `http`/`https`). Si la fuente publica justo mientras descarga, lo repite.
+
+Así funciona la demo web: ATLAS valida la vitrina de MIDAS en Render.
+
+```bash
+ATLAS_FUENTE=midas \
+ATLAS_FUENTE_RUTA=https://midas-data-pipeline.onrender.com/vitrina/gold \
+ATLAS_FUENTE_URL_CORRIDA='https://midas-data-pipeline.onrender.com/#run={run_id}' \
+uvicorn atlas.api:app
+```
+
+`ATLAS_FUENTE_URL_CORRIDA` reemplaza el `url_corrida` del YAML: el botón «Ver la corrida que la trajo» apunta a la pantalla pública.
+
 ## Próximos conectores
 
 El diseño admite cualquier fuente que DuckDB pueda leer. Los siguientes pasos naturales son S3 (Parquet con credenciales de **solo lectura**), Athena y bases como PostgreSQL o SQL Server con un usuario de solo lectura.

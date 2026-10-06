@@ -18,6 +18,7 @@ WORKDIR /app
 COPY --from=build /venv /venv
 COPY atlas ./atlas
 COPY web ./web
+COPY conectores ./conectores
 USER atlas
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s \

@@ -8,12 +8,18 @@ los datos. Todo se lee con DuckDB en modo solo lectura.
 Cuándo hay "carga nueva":
 * con manifiesto (como MIDAS): cada vez que cambia `published_at`, por cada fecha procesada;
 * sin manifiesto: cada vez que cambia la fecha de modificación de los archivos.
+
+La ruta también puede ser una URL (http/https) que publique los mismos archivos, como la demo web de
+MIDAS: ATLAS revisa el manifiesto remoto y, cuando cambia, descarga las tablas a una caché local.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time as _time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -72,6 +78,8 @@ class ParquetSource:
     files: dict[str, Path] = field(default_factory=dict)
     auto_rules: set[str] = field(default_factory=set)
     run_url: str = ""  # plantilla con {run_id}: enlace a la corrida en la herramienta de la fuente
+    remote: str = ""  # URL base si la fuente publica por internet; `path` es entonces su caché local
+    _synced_at: float = 0.0
 
     # ------------------------------------------------------------------ lectura
     def _file(self, table: str) -> Path:
@@ -89,8 +97,20 @@ class ParquetSource:
             return None
         return data if data.get("published_at") else None
 
+    def sync(self, force: bool = False) -> None:
+        """Fuente remota: si su manifiesto cambió, descarga las tablas y deja el manifiesto al final."""
+        if not self.remote or (not force and _time.time() - self._synced_at < REMOTE_EVERY_SECONDS):
+            return
+        self._synced_at = _time.time()
+        try:
+            _sync_remote(self.remote, self.path, self.manifest_file, [f.name for f in self.files.values()])
+        except OSError:
+            if force:
+                raise  # al conectar sí debe fallar; después se reintenta en el siguiente ciclo
+
     def fingerprint(self) -> str:
         """Cambia cada vez que hay algo nuevo que validar (manifiesto o archivos modificados)."""
+        self.sync()
         manifest = self.read_manifest()
         if manifest:
             return str(manifest["published_at"])
@@ -133,6 +153,43 @@ class ParquetSource:
             return rows, columns
         finally:
             con.close()
+
+
+REMOTE_EVERY_SECONDS = 5
+REMOTE_MAX_BYTES = 80 * 1024 * 1024
+
+
+def _fetch(url: str) -> bytes:
+    if not url.startswith(("https://", "http://")):
+        raise OSError(f"URL no permitida: {url}")
+    with urllib.request.urlopen(url, timeout=30) as r:  # noqa: S310 - solo http(s), validado arriba
+        data = r.read(REMOTE_MAX_BYTES + 1)
+    if len(data) > REMOTE_MAX_BYTES:
+        raise OSError(f"{url} supera {REMOTE_MAX_BYTES // 2**20} MB")
+    return data
+
+
+def _sync_remote(base_url: str, cache: Path, manifest_file: str, files: list[str]) -> bool:
+    """Descarga la publicación remota si cambió. Devuelve True si había algo nuevo."""
+    base_url = base_url.rstrip("/")
+    cache.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):  # si la fuente publica justo mientras descargamos, se repite una vez
+        remote = json.loads(_fetch(f"{base_url}/{manifest_file}")) if manifest_file else {}
+        local_file = cache / manifest_file if manifest_file else None
+        local = json.loads(local_file.read_text(encoding="utf-8")) if local_file and local_file.exists() else {}
+        if manifest_file and remote.get("published_at") == local.get("published_at"):
+            return False
+        for name in files:
+            tmp = cache / f".{name}.part"
+            tmp.write_bytes(_fetch(f"{base_url}/{name}"))
+            os.replace(tmp, cache / name)
+        if not manifest_file:
+            return True
+        again = json.loads(_fetch(f"{base_url}/{manifest_file}"))
+        if again.get("published_at") == remote.get("published_at"):
+            local_file.write_text(json.dumps(remote), encoding="utf-8")
+            return True
+    raise OSError("La fuente remota cambió durante la descarga; se reintenta en el siguiente ciclo.")
 
 
 def _relation(con, file: Path):
@@ -198,11 +255,20 @@ def load_source(name: str, config: str | None = None, path_override: str | None 
     cfg_path = Path(config) if config else ROOT / "conectores" / f"{name}.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     raw_path = path_override or os.getenv("ATLAS_FUENTE_RUTA") or os.getenv(f"ATLAS_{name.upper()}_GOLD") or cfg["ruta"]
-    # `ruta` puede ser una lista de carpetas candidatas: se usa la primera que exista.
-    candidates = [_resolve(p) for p in (raw_path if isinstance(raw_path, list) else [raw_path])]
-    base = next((p for p in candidates if p.is_dir()), candidates[0])
-    h, m = (int(x) for x in str(cfg.get("hora_esperada", "07:00")).split(":"))
     fmt = cfg.get("formato", "parquet")
+    remote = raw_path if isinstance(raw_path, str) and raw_path.startswith(("http://", "https://")) else ""
+    if remote:  # publicación por internet: se descarga a una caché local antes de leer la estructura
+        base = Path(tempfile.gettempdir()) / f"atlas-{name}-remoto"
+        names = [t.get("archivo", f"{t['nombre']}.{fmt}") for t in cfg["tablas"]]
+        try:
+            _sync_remote(remote, base, cfg.get("manifiesto", ""), names)
+        except (OSError, ValueError) as exc:
+            raise FileNotFoundError(f"No pude leer {remote}: {exc}") from exc
+    else:
+        # `ruta` puede ser una lista de carpetas candidatas: se usa la primera que exista.
+        candidates = [_resolve(p) for p in (raw_path if isinstance(raw_path, list) else [raw_path])]
+        base = next((p for p in candidates if p.is_dir()), candidates[0])
+    h, m = (int(x) for x in str(cfg.get("hora_esperada", "07:00")).split(":"))
     specs, load_types, date_columns, files = [], {}, {}, {}
     for t in cfg["tablas"]:
         file = base / t.get("archivo", f"{t['nombre']}.{fmt}")
@@ -222,7 +288,8 @@ def load_source(name: str, config: str | None = None, path_override: str | None 
     return ParquetSource(cfg.get("fuente", name), cfg.get("titulo", name), cfg.get("descripcion", ""), base,
                          cfg.get("manifiesto", ""), h * 60 + m, cfg.get("responsable", name),
                          cfg.get("correo", ""), cfg.get("url_proyecto", ""), specs, load_types, date_columns,
-                         rules, files, auto, cfg.get("url_corrida", ""))
+                         rules, files, auto, os.getenv("ATLAS_FUENTE_URL_CORRIDA") or cfg.get("url_corrida", ""),
+                         remote)
 
 
 def list_sources() -> list[dict[str, Any]]:

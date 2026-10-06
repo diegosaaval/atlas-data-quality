@@ -188,3 +188,53 @@ def test_missing_source_files_give_a_clear_error(tmp_path):
     with pytest.raises(FileNotFoundError, match="No encuentro"):
         Engine(Settings(source="x", source_config=str(cfg), rules_path=None))
     tables.use_tables(tables.BANK_TABLES)
+
+
+@pytest.fixture
+def served(tmp_path):
+    """Publica una carpeta por HTTP, como la demo web de MIDAS en /vitrina/gold."""
+    import functools
+    import threading
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+    folder = tmp_path / "publicado"
+    write_gold(folder)
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(folder))
+    handler.log_message = lambda *a: None
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield folder, f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+
+
+def test_remote_source_downloads_new_publications_and_links_the_run(served, tmp_path, monkeypatch):
+    from atlas import connectors
+
+    folder, url = served
+    cfg = tmp_path / "remota.yaml"
+    write_config(cfg, url)
+    monkeypatch.setenv("ATLAS_FUENTE_URL_CORRIDA", "https://midas.example/#run={run_id}")
+    monkeypatch.setattr(connectors, "REMOTE_EVERY_SECONDS", 0)
+    monkeypatch.setattr(connectors.tempfile, "gettempdir", lambda: str(tmp_path / "cache"))
+    engine = Engine(Settings(source="prueba", source_config=str(cfg), rules_path=None, random_anomalies=False))
+    try:
+        assert engine.snapshot()["source"]["dates"] == 10 and engine.source.remote == url
+        write_gold(folder, days=11, dup_on=10, published="2026-10-06T12:00:00+00:00")  # MIDAS publica de nuevo
+        engine.tick()
+        inc = [i for i in engine.incidents.values() if i.table == "pagos_gold" and i.resolved is None]
+        assert inc and engine.incident_dict(inc[0])["run_url"] == "https://midas.example/#run=run-11"
+        assert engine.snapshot()["source"]["dates"] == 11
+    finally:
+        engine.close()
+        tables.use_tables(tables.BANK_TABLES)
+
+
+def test_remote_source_rejects_other_schemes_and_reports_unreachable_urls(tmp_path):
+    from atlas.connectors import _fetch
+
+    with pytest.raises(OSError, match="no permitida"):
+        _fetch("file:///etc/passwd")
+    cfg = tmp_path / "remota.yaml"
+    write_config(cfg, "http://127.0.0.1:9/gold")
+    with pytest.raises(FileNotFoundError, match="No pude leer"):
+        load_source("prueba", str(cfg))
