@@ -5,8 +5,8 @@
 [![ci](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/ci.yml)
 [![codeql](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/codeql.yml/badge.svg)](https://github.com/diegosaaval/atlas-data-quality/actions/workflows/codeql.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests](https://img.shields.io/badge/tests-81%20pasando-brightgreen)
-![coverage](https://img.shields.io/badge/cobertura-95%25-brightgreen)
+![tests](https://img.shields.io/badge/tests-89%20pasando-brightgreen)
+![coverage](https://img.shields.io/badge/cobertura-94%25-brightgreen)
 ![license](https://img.shields.io/badge/licencia-MIT-lightgrey)
 
 [![Ver el video demostrativo (2:47)](docs/img/portada_video.jpg)](https://youtu.be/R8pWRAv-FZo)
