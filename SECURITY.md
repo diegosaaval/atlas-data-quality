@@ -13,7 +13,7 @@ Si encuentras una vulnerabilidad, por favor **no abras un issue público**. Usa 
 | XSS / clickjacking | Todo el contenido dinámico se escapa en la interfaz; encabezados `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy` y `Permissions-Policy`. |
 | Secretos | Ninguno en el repositorio. La API key opcional del copiloto (`ANTHROPIC_API_KEY`) se lee de variables de entorno. |
 | Contenedor | Imagen *slim*, usuario sin privilegios (`uid 10001`), sistema de archivos de solo lectura en `docker-compose`. |
-| Dependencias | Dependabot (mensual), `pip-audit` y CodeQL en cada cambio. |
+| Dependencias | Alertas de seguridad de GitHub, `pip-audit` y CodeQL en cada cambio. Las actualizaciones se aplican y se prueban con el CI antes de integrarlas. |
 
 ## Fuera de alcance
 La demo no tiene autenticación: es pública a propósito y se reinicia sola. En un uso real, ATLAS iría detrás del inicio de sesión corporativo (SSO) y se conectaría a las bases con un usuario de **solo lectura**.

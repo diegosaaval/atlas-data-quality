@@ -219,7 +219,8 @@ uvicorn atlas.api:app --reload
 | `ATLAS_RANDOM_ANOMALIES` | Aparecen anomalías aleatorias de vez en cuando | `1` |
 | `ATLAS_PUBLIC_DEMO` | Protege la demo cuando es pública | `0` |
 | `ATLAS_FUENTE` | Conector a usar (`conectores/<nombre>.yaml`); vacío = demo | vacío |
-| `ATLAS_FUENTE_RUTA` | Carpeta de los datos del conector (reemplaza la del YAML) | la del YAML |
+| `ATLAS_FUENTE_RUTA` | Carpeta **o URL** de los datos del conector (reemplaza la del YAML) | la del YAML |
+| `ATLAS_FUENTE_URL_CORRIDA` | Enlace a la corrida de la fuente, con `{run_id}` (reemplaza `url_corrida` del YAML) | el del YAML |
 | `ATLAS_RULES_PATH` | Archivo donde se guardan las reglas | `data/reglas.json` |
 | `ATLAS_SEED` | Semilla del banco sintético | `7` |
 | `ANTHROPIC_API_KEY` | Si se define, Claude redacta los correos; si no, plantillas | sin definir |
@@ -239,7 +240,7 @@ pytest --cov=atlas
 
 ## Seguridad
 
-La demo es pública, así que está protegida contra el abuso: las reglas SQL de los visitantes son de solo lectura, tienen tiempo límite y tamaño máximo; hay límite de acciones por visitante, encabezados de seguridad (CSP) y un contenedor sin privilegios. Cada cambio pasa por CodeQL y `pip-audit`. Detalle y cómo reportar un problema: [SECURITY.md](SECURITY.md).
+La demo es pública, así que está protegida contra el abuso: las reglas SQL de los visitantes son de solo lectura, tienen tiempo límite y tamaño máximo; hay límite de acciones por visitante, encabezados de seguridad (CSP) y un contenedor sin privilegios. Cada cambio pasa por CodeQL y `pip-audit`, y las alertas de seguridad de GitHub vigilan las dependencias. Detalle y cómo reportar un problema: [SECURITY.md](SECURITY.md).
 
 ## API
 
@@ -269,7 +270,7 @@ atlas/
   api.py        FastAPI: REST + WebSocket + métricas
 conectores/     fuentes reales en YAML (MIDAS incluido)
 web/            interfaz en vivo
-tests/          81 tests
+tests/          89 tests
 docs/           capturas y decisiones de diseño
 run.py          lanzador (lo usan Iniciar ATLAS.bat / .command y start.sh)
 ```
@@ -289,9 +290,9 @@ ATLAS seguirá siendo un **monitor**, no un ETL.
 
 ## Autor
 
-**Diego S** · [GitHub](https://github.com/diegosaaval)
+**Diego S** · Data Engineer · [GitHub](https://github.com/diegosaaval) · [LinkedIn](https://www.linkedin.com/in/diegosaaval/)
 
-Análisis del problema, diseño de la solución y desarrollo.
+Análisis del problema, diseño de la solución y desarrollo. Proyecto hermano: [MIDAS](https://github.com/diegosaaval/midas-data-pipeline).
 
 ## Licencia
 
